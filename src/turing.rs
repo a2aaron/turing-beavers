@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cell {
+pub enum Symbol {
     Zero,
     One,
 }
@@ -23,8 +23,11 @@ pub enum State {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Transition(pub Symbol, pub Direction, pub State);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    Normal(Cell, Direction, State),
+    Normal(Transition),
     Empty,
 }
 
@@ -67,14 +70,18 @@ impl Table {
             ];
             let states = HashMap::from(states);
 
-            let cell = if cell == '0' { Cell::Zero } else { Cell::One };
+            let cell = if cell == '0' {
+                Symbol::Zero
+            } else {
+                Symbol::One
+            };
             let direction = if direction == 'L' {
                 Direction::Left
             } else {
                 Direction::Right
             };
             let state = *states.get(&state).unwrap();
-            Ok(Action::Normal(cell, direction, state))
+            Ok(Action::Normal(Transition(cell, direction, state)))
         }
 
         fn parse_group(group: &str) -> Result<(Action, Action), ()> {
@@ -137,18 +144,18 @@ impl Tape {
         }
     }
 
-    pub fn write(&mut self, value: Cell) {
+    pub fn write(&mut self, value: Symbol) {
         match value {
-            Cell::Zero => self.ones.remove(&self.index),
-            Cell::One => self.ones.insert(self.index),
+            Symbol::Zero => self.ones.remove(&self.index),
+            Symbol::One => self.ones.insert(self.index),
         };
     }
 
-    pub fn read(&self) -> Cell {
+    pub fn read(&self) -> Symbol {
         if self.ones.contains(&self.index) {
-            Cell::One
+            Symbol::One
         } else {
-            Cell::Zero
+            Symbol::Zero
         }
     }
 

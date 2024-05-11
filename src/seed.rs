@@ -1,4 +1,4 @@
-use crate::turing::{Action, Cell, State, Table, Tape};
+use crate::turing::{Action, State, Symbol, Table, Tape, Transition};
 
 const TIME_LIMIT: usize = 47_176_870;
 const SPACE_LIMIT: usize = 12_289;
@@ -14,22 +14,22 @@ pub enum StepResult {
 
 pub fn step(tape: &mut Tape, table: &Table) -> StepResult {
     let action = match (tape.state, tape.read()) {
-        (State::A, Cell::Zero) => table.state_a_0,
-        (State::A, Cell::One) => table.state_a_1,
-        (State::B, Cell::Zero) => table.state_b_0,
-        (State::B, Cell::One) => table.state_b_1,
-        (State::C, Cell::Zero) => table.state_c_0,
-        (State::C, Cell::One) => table.state_c_1,
-        (State::D, Cell::Zero) => table.state_d_0,
-        (State::D, Cell::One) => table.state_d_1,
-        (State::E, Cell::Zero) => table.state_e_0,
-        (State::E, Cell::One) => table.state_e_1,
-        (State::Halt, Cell::Zero) => return StepResult::Halted,
-        (State::Halt, Cell::One) => return StepResult::Halted,
+        (State::A, Symbol::Zero) => table.state_a_0,
+        (State::A, Symbol::One) => table.state_a_1,
+        (State::B, Symbol::Zero) => table.state_b_0,
+        (State::B, Symbol::One) => table.state_b_1,
+        (State::C, Symbol::Zero) => table.state_c_0,
+        (State::C, Symbol::One) => table.state_c_1,
+        (State::D, Symbol::Zero) => table.state_d_0,
+        (State::D, Symbol::One) => table.state_d_1,
+        (State::E, Symbol::Zero) => table.state_e_0,
+        (State::E, Symbol::One) => table.state_e_1,
+        (State::Halt, Symbol::Zero) => return StepResult::Halted,
+        (State::Halt, Symbol::One) => return StepResult::Halted,
     };
 
     match action {
-        Action::Normal(cell, direction, state) => {
+        Action::Normal(Transition(cell, direction, state)) => {
             tape.write(cell);
             tape.shift(direction);
             tape.set_state(state);
