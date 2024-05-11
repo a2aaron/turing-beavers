@@ -25,11 +25,7 @@ pub enum State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Transition(pub Symbol, pub Direction, pub State);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
-    Normal(Transition),
-    Empty,
-}
+pub type Action = Option<Transition>;
 
 #[derive(Debug)]
 pub struct Table {
@@ -52,7 +48,7 @@ impl Table {
                 return Err(());
             }
             if action == "---" {
-                return Ok(Action::Empty);
+                return Ok(None);
             }
 
             let mut action = action.chars();
@@ -81,7 +77,7 @@ impl Table {
                 Direction::Right
             };
             let state = *states.get(&state).unwrap();
-            Ok(Action::Normal(Transition(cell, direction, state)))
+            Ok(Some(Transition(cell, direction, state)))
         }
 
         fn parse_group(group: &str) -> Result<(Action, Action), ()> {

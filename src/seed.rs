@@ -29,13 +29,13 @@ pub fn step(tape: &mut Tape, table: &Table) -> StepResult {
     };
 
     match action {
-        Action::Normal(Transition(cell, direction, state)) => {
+        Some(Transition(cell, direction, state)) => {
             tape.write(cell);
             tape.shift(direction);
             tape.set_state(state);
             StepResult::Continue
         }
-        Action::Empty => StepResult::Empty,
+        None => StepResult::Empty,
     }
 }
 
