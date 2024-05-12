@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::Display};
 
 /// The two symbols which can be written to the tape (zeros, or ones)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7,11 +7,29 @@ pub enum Symbol {
     One,
 }
 
+impl Display for Symbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Symbol::Zero => write!(f, "0"),
+            Symbol::One => write!(f, "1"),
+        }
+    }
+}
+
 /// The direction for the tape head to move on a step
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Left,
     Right,
+}
+
+impl Display for Direction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Direction::Left => write!(f, "L"),
+            Direction::Right => write!(f, "R"),
+        }
+    }
 }
 
 /// The current state of the turing machine. Note that "Halt" is not considered to be a part of
@@ -24,6 +42,19 @@ pub enum State {
     D,
     E,
     Halt,
+}
+
+impl Display for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            State::A => write!(f, "A"),
+            State::B => write!(f, "B"),
+            State::C => write!(f, "C"),
+            State::D => write!(f, "D"),
+            State::E => write!(f, "E"),
+            State::Halt => write!(f, "Z"),
+        }
+    }
 }
 
 /// A transition edge in the transition table
@@ -41,7 +72,7 @@ pub type Action = Option<Transition>;
 /// Each field in this table is named after the [State] + [Symbol] combination that the transition rule
 /// is for. For example, `state_d_1` is the transition rule for when the Turing machine reads a
 /// [Symbol::One] in [State::D]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Table {
     pub state_a_0: Action,
     pub state_a_1: Action,
@@ -56,6 +87,40 @@ pub struct Table {
 }
 
 impl Table {
+    pub fn get(&self, state: State, symbol: Symbol) -> Action {
+        match (state, symbol) {
+            (State::A, Symbol::Zero) => self.state_a_0,
+            (State::A, Symbol::One) => self.state_a_1,
+            (State::B, Symbol::Zero) => self.state_b_0,
+            (State::B, Symbol::One) => self.state_b_1,
+            (State::C, Symbol::Zero) => self.state_c_0,
+            (State::C, Symbol::One) => self.state_c_1,
+            (State::D, Symbol::Zero) => self.state_d_0,
+            (State::D, Symbol::One) => self.state_d_1,
+            (State::E, Symbol::Zero) => self.state_e_0,
+            (State::E, Symbol::One) => self.state_e_1,
+            (State::Halt, Symbol::Zero) => unreachable!("Cannot return Halt-state Action"),
+            (State::Halt, Symbol::One) => unreachable!("Cannot return Halt-state Action"),
+        }
+    }
+
+    pub fn get_mut(&mut self, state: State, symbol: Symbol) -> &mut Action {
+        match (state, symbol) {
+            (State::A, Symbol::Zero) => &mut self.state_a_0,
+            (State::A, Symbol::One) => &mut self.state_a_1,
+            (State::B, Symbol::Zero) => &mut self.state_b_0,
+            (State::B, Symbol::One) => &mut self.state_b_1,
+            (State::C, Symbol::Zero) => &mut self.state_c_0,
+            (State::C, Symbol::One) => &mut self.state_c_1,
+            (State::D, Symbol::Zero) => &mut self.state_d_0,
+            (State::D, Symbol::One) => &mut self.state_d_1,
+            (State::E, Symbol::Zero) => &mut self.state_e_0,
+            (State::E, Symbol::One) => &mut self.state_e_1,
+            (State::Halt, Symbol::Zero) => unreachable!("Cannot return Halt-state Action"),
+            (State::Halt, Symbol::One) => unreachable!("Cannot return Halt-state Action"),
+        }
+    }
+
     /// Parse a Turing machine string in the following format:
     /// `AAAaaa-BBBbbb-CCCccc-DDDddd-EEEeee`
     /// Each triple of letters correspond to an transition. For instance, "aaa" is the [Action]
@@ -138,6 +203,35 @@ impl Table {
                 state_e_1,
             })
         }
+    }
+}
+
+impl Display for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn display_action(action: &Action) -> String {
+            if let Some(action) = action {
+                let symbol = action.0;
+                let direction = action.1;
+                let state = action.2;
+                format!("{symbol}{direction}{state}")
+            } else {
+                "---".to_string()
+            }
+        }
+        write!(
+            f,
+            "{}{}_{}{}_{}{}_{}{}_{}{}",
+            display_action(&self.state_a_0),
+            display_action(&self.state_a_1),
+            display_action(&self.state_b_0),
+            display_action(&self.state_b_1),
+            display_action(&self.state_c_0),
+            display_action(&self.state_c_1),
+            display_action(&self.state_d_0),
+            display_action(&self.state_d_1),
+            display_action(&self.state_e_0),
+            display_action(&self.state_e_1),
+        )
     }
 }
 
