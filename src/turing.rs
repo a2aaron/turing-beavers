@@ -99,8 +99,7 @@ impl Table {
             (State::D, Symbol::One) => self.state_d_1,
             (State::E, Symbol::Zero) => self.state_e_0,
             (State::E, Symbol::One) => self.state_e_1,
-            (State::Halt, Symbol::Zero) => unreachable!("Cannot return Halt-state Action"),
-            (State::Halt, Symbol::One) => unreachable!("Cannot return Halt-state Action"),
+            (State::Halt, _) => unreachable!("Cannot return Halt-state Action"),
         }
     }
 
@@ -116,8 +115,7 @@ impl Table {
             (State::D, Symbol::One) => &mut self.state_d_1,
             (State::E, Symbol::Zero) => &mut self.state_e_0,
             (State::E, Symbol::One) => &mut self.state_e_1,
-            (State::Halt, Symbol::Zero) => unreachable!("Cannot return Halt-state Action"),
-            (State::Halt, Symbol::One) => unreachable!("Cannot return Halt-state Action"),
+            (State::Halt, _) => unreachable!("Cannot return Halt-state Action"),
         }
     }
 
@@ -241,8 +239,10 @@ impl Display for Table {
 /// position have a negative index, while cells to the right have a positive index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tape {
-    /// A hashset containing the index of every [Symbol::One] written to the tape.
-    pub ones: HashSet<isize>,
+    // The right half of the tape, starting at index 0
+    positive: Vec<Symbol>,
+    // The left half of the tape, starting at index -1.
+    negative: Vec<Symbol>,
     /// The current state of the machine
     pub state: State,
     /// The location of the tape head
@@ -253,8 +253,11 @@ impl Tape {
     /// Construct a new empty tape. The tape will start in [State::A] and it's tape head will
     /// be located at index 0.
     pub fn new() -> Tape {
+        let mut positive = Vec::with_capacity(16 * 1024);
+        positive.push(Symbol::Zero);
         Tape {
-            ones: HashSet::with_capacity(1024),
+            positive,
+            negative: Vec::with_capacity(16 * 1024),
             index: 0,
             state: State::A,
         }
@@ -266,27 +269,53 @@ impl Tape {
             Direction::Left => self.index -= 1,
             Direction::Right => self.index += 1,
         }
+
+        if self.index >= 0 {
+            let within_tape = self.positive_index() < self.positive.len();
+            if !within_tape {
+                self.positive.push(Symbol::Zero);
+            }
+        } else {
+            let within_tape = self.negative_index() < self.negative.len();
+            if !within_tape {
+                self.negative.push(Symbol::Zero);
+            }
+        }
     }
 
     /// Write the specified [Symbol] to the cell at the tape head.
     pub fn write(&mut self, value: Symbol) {
-        match value {
-            Symbol::Zero => self.ones.remove(&self.index),
-            Symbol::One => self.ones.insert(self.index),
-        };
+        if self.index >= 0 {
+            let index = self.positive_index();
+            self.positive[index] = value;
+        } else {
+            let index = self.negative_index();
+            self.negative[index] = value;
+        }
     }
 
     /// Return the specified [Symbol] on the cell at the tape head.
     pub fn read(&self) -> Symbol {
-        if self.ones.contains(&self.index) {
-            Symbol::One
+        if self.index >= 0 {
+            self.positive[self.positive_index()]
         } else {
-            Symbol::Zero
+            self.negative[self.negative_index()]
         }
     }
 
     /// Set the machine's [State]
     pub fn set_state(&mut self, state: State) {
         self.state = state;
+    }
+
+    fn positive_index(&self) -> usize {
+        assert!(self.index >= 0);
+        self.index as usize
+    }
+
+    fn negative_index(&self) -> usize {
+        assert!(self.index < 0);
+        // -1 -> 0, -2 -> 1, -3 -> 2, etc
+        (-self.index - 1) as usize
     }
 }

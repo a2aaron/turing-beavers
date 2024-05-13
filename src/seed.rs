@@ -8,7 +8,7 @@ use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 const BUSY_BEAVER_FOUR_STEPS: usize = 107;
 
 /// The number of steps that [BB5_CHAMPION] runs for before halting.
-const TIME_LIMIT: usize = 1_000_000; // 47_176_870;
+const TIME_LIMIT: usize = 47_176_870;
 /// The number of unique cells visited by the [BB5_CHAMPION]. Note that this is not how many ones
 /// that the champion writes to the tape, rather it's every cell written to (even cells which are
 /// written to but do not have their value changed). Hence, this will be larger than the number of
