@@ -1,6 +1,9 @@
+use std::time::Instant;
+
 use turing_beavers::seed::Explorer;
 
 fn main() {
+    let start = Instant::now();
     let mut explorer = Explorer::new();
 
     // while let Some(result) = explorer.step() {
@@ -12,4 +15,6 @@ fn main() {
             explorer.print_status(result.unwrap());
         }
     }
+
+    println!("elapsed: {:?}", start.elapsed());
 }

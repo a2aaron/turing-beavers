@@ -5,21 +5,21 @@ use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 /// is it guaranteed to be non-halting. (If the machine were able to goes for more than 107 steps
 /// without accessing it's 5th state but halted anyways, it would contradict the 4-State champion as
 /// being the champion.)
-const BUSY_BEAVER_FOUR_STEPS: usize = 107;
+pub const BUSY_BEAVER_FOUR_STEPS: usize = 107;
 
 /// The number of steps that [BB5_CHAMPION] runs for before halting.
-const TIME_LIMIT: usize = 47_176_870;
+pub const TIME_LIMIT: usize = 47_176_870;
 /// The number of unique cells visited by the [BB5_CHAMPION]. Note that this is not how many ones
 /// that the champion writes to the tape, rather it's every cell written to (even cells which are
 /// written to but do not have their value changed). Hence, this will be larger than the number of
 /// ones written)
-const SPACE_LIMIT: usize = 12_289;
+pub const SPACE_LIMIT: usize = 12_289;
 /// The current contender champion for the 5-State 2-Symbol Busy Beaver.
-const BB5_CHAMPION: &str = "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA";
+pub const BB5_CHAMPION: &str = "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA";
 /// The starting machine to use when doing the phase 1 seed generation. This is the machine with
 /// all empty transitions, except for the "state A + symbol 0" transition, which is
 /// "write 1 + move right + state b".
-const STARTING_MACHINE: &str = "1RB---_------_------_------_------";
+pub const STARTING_MACHINE: &str = "1RB---_------_------_------_------";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepResult {
@@ -130,8 +130,8 @@ impl ExplorerState {
 
         if result == StepResult::Continue {
             self.stats.steps_ran += 1;
-            self.stats.min_index = self.stats.min_index.min(self.tape.index);
-            self.stats.max_index = self.stats.max_index.max(self.tape.index);
+            self.stats.min_index = self.stats.min_index.min(self.tape.index());
+            self.stats.max_index = self.stats.max_index.max(self.tape.index());
         }
         result
     }
@@ -140,7 +140,7 @@ impl ExplorerState {
         println!(
             "{} | index: {}, state: {} | steps: {}, min: {}, max: {}",
             self.table,
-            self.tape.index,
+            self.tape.index(),
             self.tape.state,
             self.stats.steps_ran,
             self.stats.min_index,

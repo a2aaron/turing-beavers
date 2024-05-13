@@ -1,4 +1,6 @@
-use std::{collections::HashSet, fmt::Display};
+use std::fmt::Display;
+
+use crate::seed::SPACE_LIMIT;
 
 /// The two symbols which can be written to the tape (zeros, or ones)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,26 +241,23 @@ impl Display for Table {
 /// position have a negative index, while cells to the right have a positive index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tape {
-    // The right half of the tape, starting at index 0
-    positive: Vec<Symbol>,
-    // The left half of the tape, starting at index -1.
-    negative: Vec<Symbol>,
+    // The tape, which is always 2 * SPACE_LIMIT + 1 cells large. This is fine because the seeding
+    // rules will never simulate a Tape such that it hits more than SPACE_LIMIT cells (so we can just
+    // make a Tape which is at least as long in both directions to guarentee we won't go over this.)
+    tape: Box<[Symbol]>,
     /// The current state of the machine
     pub state: State,
-    /// The location of the tape head
-    pub index: isize,
+    // The location of the tape head.
+    index: usize,
 }
 
 impl Tape {
     /// Construct a new empty tape. The tape will start in [State::A] and it's tape head will
     /// be located at index 0.
     pub fn new() -> Tape {
-        let mut positive = Vec::with_capacity(16 * 1024);
-        positive.push(Symbol::Zero);
         Tape {
-            positive,
-            negative: Vec::with_capacity(16 * 1024),
-            index: 0,
+            tape: [Symbol::Zero; 2 * SPACE_LIMIT + 1].into(),
+            index: SPACE_LIMIT,
             state: State::A,
         }
     }
@@ -269,38 +268,16 @@ impl Tape {
             Direction::Left => self.index -= 1,
             Direction::Right => self.index += 1,
         }
-
-        if self.index >= 0 {
-            let within_tape = self.positive_index() < self.positive.len();
-            if !within_tape {
-                self.positive.push(Symbol::Zero);
-            }
-        } else {
-            let within_tape = self.negative_index() < self.negative.len();
-            if !within_tape {
-                self.negative.push(Symbol::Zero);
-            }
-        }
     }
 
     /// Write the specified [Symbol] to the cell at the tape head.
     pub fn write(&mut self, value: Symbol) {
-        if self.index >= 0 {
-            let index = self.positive_index();
-            self.positive[index] = value;
-        } else {
-            let index = self.negative_index();
-            self.negative[index] = value;
-        }
+        self.tape[self.index] = value;
     }
 
     /// Return the specified [Symbol] on the cell at the tape head.
     pub fn read(&self) -> Symbol {
-        if self.index >= 0 {
-            self.positive[self.positive_index()]
-        } else {
-            self.negative[self.negative_index()]
-        }
+        self.tape[self.index]
     }
 
     /// Set the machine's [State]
@@ -308,14 +285,7 @@ impl Tape {
         self.state = state;
     }
 
-    fn positive_index(&self) -> usize {
-        assert!(self.index >= 0);
-        self.index as usize
-    }
-
-    fn negative_index(&self) -> usize {
-        assert!(self.index < 0);
-        // -1 -> 0, -2 -> 1, -3 -> 2, etc
-        (-self.index - 1) as usize
+    pub fn index(&self) -> isize {
+        self.index as isize - SPACE_LIMIT as isize
     }
 }
