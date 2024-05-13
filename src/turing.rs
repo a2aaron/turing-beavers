@@ -74,7 +74,7 @@ pub type Action = Option<Transition>;
 /// Each field in this table is named after the [State] + [Symbol] combination that the transition rule
 /// is for. For example, `state_d_1` is the transition rule for when the Turing machine reads a
 /// [Symbol::One] in [State::D]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Table {
     pub state_a_0: Action,
     pub state_a_1: Action,

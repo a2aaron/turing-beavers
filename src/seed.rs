@@ -183,7 +183,7 @@ impl Explorer {
                     // We halted because we encountered an empty transition. This means that we need
                     // to create a bunch of new machines whose tape is the same, but with the missing
                     // transition defined.
-                    let mut nodes = Self::get_nodes(&node);
+                    let mut nodes = get_child_nodes(node.clone());
                     nodes_added = Some(nodes.size_hint().0);
                     self.machines_to_check.extend(&mut nodes);
                 }
@@ -227,78 +227,6 @@ impl Explorer {
             HaltReason::HaltState => ExplorerResult::Halting,
             HaltReason::EmptyTransition => ExplorerResult::EmptyTransition,
         }
-    }
-
-    // Since there are 2 symbols, 2 directions, and 5 + 1 target states, there are
-    // 24 possible transitions we could use. However, we can actually cut down how
-    // many transitions we consider with the following rules:
-    // 1. If we are defining the very first transition, we fix the first transition
-    //    to be 0A -> 1RB (this is not done here, but instead is a consequence of
-    //    the starting machine used).
-    //    This is valid since the only other meaningfully different transitions are
-    //    0A -> 0_A and 0A -> 1_A. In both cases, the machine will obviously
-    //    never halt, since it will constantly be move left or right and remain in
-    //    state A.
-    // 2. If we are defining the very last empty transition, we fix the target state
-    //    to be the halt state. This is needed because if there's no halt state,
-    //    then obviously the machine cannot halt. In fact, we can just fix the
-    //    transition to be _ -> 1LZ (or something equivalent) since it won't matter
-    //    what symbol or direction we move since we're about to halt anyways.
-    // 3. Otherwise, we're defining some empty transition that isn't the last one.
-    //    In this case, we have a set of possible target states. The target states
-    //    will be all of the visited states (so all of the states which have a
-    //    defined transition) and the "lowest" unvisited state (where we consider
-    //    state A to be the lowest and state E to be the highest).
-    //    For example, if we have already visited states A, B, C (and unvisited states
-    //    D and E), then the target states will be A, B, C, and D.
-    //    (Sidenote: This also means that "visited" states will always be lower than
-    //    unvisited ones, and that we only ever visit new states in the order of
-    //    A, B, C, D, E. Another way to say this: The set of target states is just
-    //    the states which have a defined transition in the table, plus the next
-    //    state which would come after that).
-    //    Also: Note that this case deliberately excludes the halt state from
-    //    consideration (obviously if we define the target state for the transition
-    //    we are about to take as the halt state then the machine will immediately
-    //    halt, which is boring)
-    //
-
-    fn get_target_states(table: &Table) -> Vec<State> {
-        let is_last_transition = defined_transitions(table) == 10 - 1;
-        if is_last_transition {
-            vec![State::Halt]
-        } else {
-            match visited_states(table) {
-                // Technically not reachable, but included for completeness
-                0 => vec![State::A],
-                1 => vec![State::A, State::B],
-                2 => vec![State::A, State::B, State::C],
-                3 => vec![State::A, State::B, State::C, State::D],
-                4 => vec![State::A, State::B, State::C, State::D, State::E],
-                5 => vec![State::A, State::B, State::C, State::D, State::E],
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    fn get_nodes(node: &ExplorerState) -> impl Iterator<Item = ExplorerState> {
-        let target_states = Self::get_target_states(&node.table);
-
-        let transitions = target_states.into_iter().flat_map(|target_state| {
-            [
-                Transition(Symbol::Zero, Direction::Left, target_state),
-                Transition(Symbol::Zero, Direction::Right, target_state),
-                Transition(Symbol::One, Direction::Left, target_state),
-                Transition(Symbol::One, Direction::Right, target_state),
-            ]
-        });
-
-        let node = node.clone();
-        transitions.map(move |transition| {
-            let mut new_node = node.clone();
-            let action = new_node.table.get_mut(node.tape.state, node.tape.read());
-            *action = Some(transition);
-            new_node
-        })
     }
 
     pub fn print_status(&self, result: ExplorerStepResult) {
@@ -387,14 +315,79 @@ pub enum ExplorerResult {
     EmptyTransition,
 }
 
+/// Returns the target states that an undefined transition can opt to visit. This is the set of
+/// already visited states in the Table plus the lowest unvisited state.
+fn get_target_states(table: &Table) -> Vec<State> {
+    let is_last_transition = defined_transitions(table) == 10 - 1;
+    if is_last_transition {
+        vec![State::Halt]
+    } else {
+        match visited_states(table) {
+            // Technically not reachable, but included for completeness
+            0 => vec![State::A],
+            1 => vec![State::A, State::B],
+            2 => vec![State::A, State::B, State::C],
+            3 => vec![State::A, State::B, State::C, State::D],
+            4 => vec![State::A, State::B, State::C, State::D, State::E],
+            5 => vec![State::A, State::B, State::C, State::D, State::E],
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn get_child_nodes(node: ExplorerState) -> impl Iterator<Item = ExplorerState> {
+    get_child_tables_for_transition(node.table, node.tape.state, node.tape.read()).map(
+        move |table| {
+            let mut new_node = node.clone();
+            new_node.table = table;
+            new_node
+        },
+    )
+}
+
+/// Given a transition [Table], returns a set of Tables whose
+/// The input Table is assumed to have the follwoing conditions:
+/// 1. The table's visited states (that is, the states for which at least one of the two transitions is defined) should
+///    all be lower than the unvisited states (where states are order with A as the lowest and E as the highest)
+/// 2. The table has at least one empty [Action]. In particular, the Action returned by table.get(state, symbol) should
+///    be empty.
+/// 3. `state` is the lowest unvisited state in the table.
+fn get_child_tables_for_transition(
+    table: Table,
+    state: State,
+    symbol: Symbol,
+) -> impl Iterator<Item = Table> {
+    let target_states = get_target_states(&table);
+    // Turn each target state into 0LX, 0RX, 1LX, and 1RX
+    let transitions = target_states.into_iter().flat_map(|target_state| {
+        [
+            Transition(Symbol::Zero, Direction::Left, target_state),
+            Transition(Symbol::Zero, Direction::Right, target_state),
+            Transition(Symbol::One, Direction::Left, target_state),
+            Transition(Symbol::One, Direction::Right, target_state),
+        ]
+    });
+    // Replace the undefined transition with the transitions we just created.
+    transitions.map(move |transition| {
+        let mut table = table.clone();
+        let action = table.get_mut(state, symbol);
+        *action = Some(transition);
+        table
+    })
+}
+
 #[cfg(test)]
 mod test {
     use crate::{
         seed::{ExplorerResult, ExplorerState, HaltReason, SPACE_LIMIT, TIME_LIMIT},
-        turing::Table,
+        turing::{State, Symbol, Table},
     };
 
-    use super::{Explorer, BB5_CHAMPION};
+    use super::{get_child_tables_for_transition, Explorer, BB5_CHAMPION, STARTING_MACHINE};
+
+    fn assert_contains(tables: &[Table], table: &str) {
+        assert!(tables.contains(&Table::parse(table).unwrap()))
+    }
 
     #[test]
     fn test_bb_champion() {
@@ -414,5 +407,33 @@ mod test {
 
         let result = explorer.step().unwrap();
         assert_eq!(ExplorerResult::EmptyTransition, result.halt_result);
+    }
+
+    #[test]
+    fn test_get_child_tables_1() {
+        let table = Table::parse(STARTING_MACHINE).unwrap();
+        let tables: Vec<Table> =
+            get_child_tables_for_transition(table, State::B, Symbol::One).collect();
+
+        assert_contains(&tables, "1RB---_---0LA_------_------_------");
+        assert_contains(&tables, "1RB---_---0RA_------_------_------");
+        assert_contains(&tables, "1RB---_---1LA_------_------_------");
+        assert_contains(&tables, "1RB---_---1RA_------_------_------");
+        assert_contains(&tables, "1RB---_---0LB_------_------_------");
+        assert_contains(&tables, "1RB---_---0RB_------_------_------");
+        assert_contains(&tables, "1RB---_---1LB_------_------_------");
+        assert_contains(&tables, "1RB---_---1RB_------_------_------");
+    }
+
+    #[test]
+    fn test_get_child_tables_2() {
+        let table = Table::parse("1RB1LC_1RC1RB_1RD0LE_1LA1LD_---0LA").unwrap();
+        let tables: Vec<Table> =
+            get_child_tables_for_transition(table, State::E, Symbol::Zero).collect();
+
+        assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_0LZ0LA");
+        assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_0RZ0LA");
+        assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1LZ0LA");
+        assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA");
     }
 }
