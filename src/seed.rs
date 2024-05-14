@@ -103,6 +103,43 @@ impl ExplorerNode {
         }
     }
 
+    fn decide(mut self) -> MachineDecision {
+        // We build a tree of all of the "interesting" machines using the following algorithm:
+        // - Simulate a machine step-by-step. One of three things happen:
+        //      1. The machine reaches the time or space limit. In this case, we mark the machine as
+        //         "Undecided" and remove it from the list of machines to check
+        //      2. The machine reaches the BB(4) = 107 step limit. In this case, we mark the machine
+        //         "Non-Halting" and remove it from the list of machines to check
+        //      3. The machine reaches an empty transition. In this case, for each transition in the
+        //         set of unique transitions (described below), we duplicate the machine
+        //         and replace the empty transition with a filled transition. These new machines are
+        //         added to the list of undecided machines and the original is removed.
+        let four_states_or_less = visited_states(&self.table) < 5;
+        let halt_reason = if four_states_or_less {
+            self.run(Some(BUSY_BEAVER_FOUR_STEPS), Some(SPACE_LIMIT))
+        } else {
+            self.run(Some(TIME_LIMIT), Some(SPACE_LIMIT))
+        };
+
+        match halt_reason {
+            // If we exceed the step limit, but visited 4 or less states, then the machine will
+            // never halt since there's no way for it break out of those 4 states (if there was,
+            // this would contradict the value of BB(4), since it would mean there is a halting
+            // 2-symbol 4-state TM that halts later than BB(4) = 107 steps)
+            HaltReason::ExceededStepLimit if four_states_or_less => MachineDecision::NonHalting,
+            HaltReason::ExceededStepLimit => MachineDecision::UndecidedStepLimit,
+            HaltReason::ExceededSpaceLimit => MachineDecision::UndecidedSpaceLimit,
+            HaltReason::HaltState => MachineDecision::Halting,
+            HaltReason::EmptyTransition => {
+                // We halted because we encountered an empty transition. This means that we need
+                // to create a bunch of new machines whose tape is the same, but with the missing
+                // transition defined.
+                let nodes = get_child_nodes(self).collect();
+                MachineDecision::EmptyTransition(nodes)
+            }
+        }
+    }
+
     fn run(&mut self, max_steps: Option<usize>, max_space: Option<usize>) -> HaltReason {
         loop {
             match self.step() {
@@ -171,11 +208,11 @@ impl Explorer {
         }
     }
 
-    pub fn step(&mut self) -> Option<ExplorerStepInfo> {
-        if let Some(mut node) = self.machines_to_check.pop() {
-            let halt_result = Self::step_node(&mut node);
+    pub fn step_decide(&mut self) -> Option<ExplorerStepInfo> {
+        if let Some(node) = self.machines_to_check.pop() {
+            let decision = node.clone().decide();
 
-            match halt_result.clone() {
+            match decision.clone() {
                 MachineDecision::Halting => self.halting.push(node.table),
                 MachineDecision::NonHalting => self.nonhalting.push(node.table),
                 MachineDecision::UndecidedStepLimit | MachineDecision::UndecidedSpaceLimit => {
@@ -185,49 +222,9 @@ impl Explorer {
                     self.machines_to_check.append(&mut nodes)
                 }
             }
-            Some(ExplorerStepInfo {
-                node,
-                decision: halt_result,
-            })
+            Some(ExplorerStepInfo { node, decision })
         } else {
             None
-        }
-    }
-
-    fn step_node(node: &mut ExplorerNode) -> MachineDecision {
-        // We build a tree of all of the "interesting" machines using the following algorithm:
-        // - Simulate a machine step-by-step. One of three things happen:
-        //      1. The machine reaches the time or space limit. In this case, we mark the machine as
-        //         "Undecided" and remove it from the list of machines to check
-        //      2. The machine reaches the BB(4) = 107 step limit. In this case, we mark the machine
-        //         "Non-Halting" and remove it from the list of machines to check
-        //      3. The machine reaches an empty transition. In this case, for each transition in the
-        //         set of unique transitions (described below), we duplicate the machine
-        //         and replace the empty transition with a filled transition. These new machines are
-        //         added to the list of undecided machines and the original is removed.
-        let four_states_or_less = visited_states(&node.table) < 5;
-        let halt_reason = if four_states_or_less {
-            node.run(Some(BUSY_BEAVER_FOUR_STEPS), Some(SPACE_LIMIT))
-        } else {
-            node.run(Some(TIME_LIMIT), Some(SPACE_LIMIT))
-        };
-
-        match halt_reason {
-            // If we exceed the step limit, but visited 4 or less states, then the machine will
-            // never halt since there's no way for it break out of those 4 states (if there was,
-            // this would contradict the value of BB(4), since it would mean there is a halting
-            // 2-symbol 4-state TM that halts later than BB(4) = 107 steps)
-            HaltReason::ExceededStepLimit if four_states_or_less => MachineDecision::NonHalting,
-            HaltReason::ExceededStepLimit => MachineDecision::UndecidedStepLimit,
-            HaltReason::ExceededSpaceLimit => MachineDecision::UndecidedSpaceLimit,
-            HaltReason::HaltState => MachineDecision::Halting,
-            HaltReason::EmptyTransition => {
-                // We halted because we encountered an empty transition. This means that we need
-                // to create a bunch of new machines whose tape is the same, but with the missing
-                // transition defined.
-                let nodes = get_child_nodes(node.clone()).collect();
-                MachineDecision::EmptyTransition(nodes)
-            }
         }
     }
 
@@ -397,7 +394,7 @@ mod test {
     fn test_explorer() {
         let mut explorer = Explorer::new();
 
-        let result = explorer.step().unwrap();
+        let result = explorer.step_decide().unwrap();
         assert!(matches!(
             result.decision,
             MachineDecision::EmptyTransition(_)
