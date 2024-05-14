@@ -185,7 +185,10 @@ impl Explorer {
                     self.machines_to_check.append(&mut nodes)
                 }
             }
-            Some(ExplorerStepInfo { node, halt_result })
+            Some(ExplorerStepInfo {
+                node,
+                decision: halt_result,
+            })
         } else {
             None
         }
@@ -233,7 +236,7 @@ impl Explorer {
         let table = node.table;
         let stats = node.stats;
         let remaining = self.machines_to_check.len();
-        let message = match result.halt_result {
+        let message = match result.decision {
             MachineDecision::Halting => format!(
                 "halted ({} steps, {} cells)",
                 stats.steps_ran,
@@ -261,38 +264,7 @@ impl Explorer {
 
 pub struct ExplorerStepInfo {
     pub node: ExplorerNode,
-    pub halt_result: MachineDecision,
-}
-
-/// Returns the number of transitions which are defined on the table.
-fn defined_transitions(table: &Table) -> usize {
-    table.state_a_0.is_some() as usize
-        + table.state_a_1.is_some() as usize
-        + table.state_b_0.is_some() as usize
-        + table.state_b_1.is_some() as usize
-        + table.state_c_0.is_some() as usize
-        + table.state_c_1.is_some() as usize
-        + table.state_d_0.is_some() as usize
-        + table.state_d_1.is_some() as usize
-        + table.state_e_0.is_some() as usize
-        + table.state_e_1.is_some() as usize
-}
-
-/// Returns the number of states which are visited in this table. This will give how many
-/// states were visited since we only define a state transition as a machien is about to
-/// visit it.
-fn visited_states(table: &Table) -> usize {
-    let a_visited = table.state_a_0.is_some() || table.state_a_1.is_some();
-    let b_visited = table.state_b_0.is_some() || table.state_b_1.is_some();
-    let c_visited = table.state_c_0.is_some() || table.state_c_1.is_some();
-    let d_visited = table.state_d_0.is_some() || table.state_d_1.is_some();
-    let e_visited = table.state_e_0.is_some() || table.state_e_1.is_some();
-
-    a_visited as usize
-        + b_visited as usize
-        + c_visited as usize
-        + d_visited as usize
-        + e_visited as usize
+    pub decision: MachineDecision,
 }
 
 #[derive(Debug, Clone)]
@@ -302,26 +274,6 @@ pub enum MachineDecision {
     UndecidedStepLimit,
     UndecidedSpaceLimit,
     EmptyTransition(Vec<ExplorerNode>),
-}
-
-/// Returns the target states that an undefined transition can opt to visit. This is the set of
-/// already visited states in the Table plus the lowest unvisited state.
-fn get_target_states(table: &Table) -> Vec<State> {
-    let is_last_transition = defined_transitions(table) == 10 - 1;
-    if is_last_transition {
-        vec![State::Halt]
-    } else {
-        match visited_states(table) {
-            // Technically not reachable, but included for completeness
-            0 => vec![State::A],
-            1 => vec![State::A, State::B],
-            2 => vec![State::A, State::B, State::C],
-            3 => vec![State::A, State::B, State::C, State::D],
-            4 => vec![State::A, State::B, State::C, State::D, State::E],
-            5 => vec![State::A, State::B, State::C, State::D, State::E],
-            _ => unreachable!(),
-        }
-    }
 }
 
 fn get_child_nodes(node: ExplorerNode) -> impl Iterator<Item = ExplorerNode> {
@@ -365,6 +317,57 @@ fn get_child_tables_for_transition(
     })
 }
 
+/// Returns the target states that an undefined transition can opt to visit. This is the set of
+/// already visited states in the Table plus the lowest unvisited state.
+fn get_target_states(table: &Table) -> Vec<State> {
+    let is_last_transition = defined_transitions(table) == 10 - 1;
+    if is_last_transition {
+        vec![State::Halt]
+    } else {
+        match visited_states(table) {
+            // Technically not reachable, but included for completeness
+            0 => vec![State::A],
+            1 => vec![State::A, State::B],
+            2 => vec![State::A, State::B, State::C],
+            3 => vec![State::A, State::B, State::C, State::D],
+            4 => vec![State::A, State::B, State::C, State::D, State::E],
+            5 => vec![State::A, State::B, State::C, State::D, State::E],
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Returns the number of states which are visited in this table. This will give how many
+/// states were visited since we only define a state transition as a machien is about to
+/// visit it.
+fn visited_states(table: &Table) -> usize {
+    let a_visited = table.state_a_0.is_some() || table.state_a_1.is_some();
+    let b_visited = table.state_b_0.is_some() || table.state_b_1.is_some();
+    let c_visited = table.state_c_0.is_some() || table.state_c_1.is_some();
+    let d_visited = table.state_d_0.is_some() || table.state_d_1.is_some();
+    let e_visited = table.state_e_0.is_some() || table.state_e_1.is_some();
+
+    a_visited as usize
+        + b_visited as usize
+        + c_visited as usize
+        + d_visited as usize
+        + e_visited as usize
+}
+
+/// Returns the number of transitions which are defined on the table.
+fn defined_transitions(table: &Table) -> usize {
+    table.state_a_0.is_some() as usize
+        + table.state_a_1.is_some() as usize
+        + table.state_b_0.is_some() as usize
+        + table.state_b_1.is_some() as usize
+        + table.state_c_0.is_some() as usize
+        + table.state_c_1.is_some() as usize
+        + table.state_d_0.is_some() as usize
+        + table.state_d_1.is_some() as usize
+        + table.state_e_0.is_some() as usize
+        + table.state_e_1.is_some() as usize
+}
+
 #[cfg(test)]
 mod test {
     use crate::{
@@ -396,7 +399,7 @@ mod test {
 
         let result = explorer.step().unwrap();
         assert!(matches!(
-            result.halt_result,
+            result.decision,
             MachineDecision::EmptyTransition(_)
         ));
     }
