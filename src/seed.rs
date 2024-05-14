@@ -88,15 +88,15 @@ impl RunStats {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExplorerState {
+pub struct ExplorerNode {
     pub table: Table,
     pub tape: Tape,
     pub stats: RunStats,
 }
 
-impl ExplorerState {
-    pub fn new(table: Table) -> ExplorerState {
-        ExplorerState {
+impl ExplorerNode {
+    pub fn new(table: Table) -> ExplorerNode {
+        ExplorerNode {
             table,
             tape: Tape::new(),
             stats: RunStats::new(),
@@ -150,7 +150,7 @@ impl ExplorerState {
 }
 
 pub struct Explorer {
-    pub machines_to_check: Vec<ExplorerState>,
+    pub machines_to_check: Vec<ExplorerNode>,
     pub nonhalting: Vec<Table>,
     pub halting: Vec<Table>,
     pub undecided: Vec<Table>,
@@ -159,7 +159,7 @@ pub struct Explorer {
 impl Explorer {
     pub fn new() -> Explorer {
         let table = Table::parse(STARTING_MACHINE).unwrap();
-        let machine = ExplorerState::new(table);
+        let machine = ExplorerNode::new(table);
 
         let mut machines_to_check = Vec::new();
         machines_to_check.push(machine);
@@ -171,27 +171,27 @@ impl Explorer {
         }
     }
 
-    pub fn step(&mut self) -> Option<ExplorerStepResult> {
+    pub fn step(&mut self) -> Option<ExplorerStepInfo> {
         if let Some(mut node) = self.machines_to_check.pop() {
             let halt_result = Self::step_node(&mut node);
 
             match halt_result.clone() {
-                ExplorerResult::Halting => self.halting.push(node.table),
-                ExplorerResult::NonHalting => self.nonhalting.push(node.table),
-                ExplorerResult::UndecidedStepLimit | ExplorerResult::UndecidedSpaceLimit => {
+                MachineDecision::Halting => self.halting.push(node.table),
+                MachineDecision::NonHalting => self.nonhalting.push(node.table),
+                MachineDecision::UndecidedStepLimit | MachineDecision::UndecidedSpaceLimit => {
                     self.undecided.push(node.table)
                 }
-                ExplorerResult::EmptyTransition(mut nodes) => {
+                MachineDecision::EmptyTransition(mut nodes) => {
                     self.machines_to_check.append(&mut nodes)
                 }
             }
-            Some(ExplorerStepResult { node, halt_result })
+            Some(ExplorerStepInfo { node, halt_result })
         } else {
             None
         }
     }
 
-    fn step_node(node: &mut ExplorerState) -> ExplorerResult {
+    fn step_node(node: &mut ExplorerNode) -> MachineDecision {
         // We build a tree of all of the "interesting" machines using the following algorithm:
         // - Simulate a machine step-by-step. One of three things happen:
         //      1. The machine reaches the time or space limit. In this case, we mark the machine as
@@ -214,41 +214,41 @@ impl Explorer {
             // never halt since there's no way for it break out of those 4 states (if there was,
             // this would contradict the value of BB(4), since it would mean there is a halting
             // 2-symbol 4-state TM that halts later than BB(4) = 107 steps)
-            HaltReason::ExceededStepLimit if four_states_or_less => ExplorerResult::NonHalting,
-            HaltReason::ExceededStepLimit => ExplorerResult::UndecidedStepLimit,
-            HaltReason::ExceededSpaceLimit => ExplorerResult::UndecidedSpaceLimit,
-            HaltReason::HaltState => ExplorerResult::Halting,
+            HaltReason::ExceededStepLimit if four_states_or_less => MachineDecision::NonHalting,
+            HaltReason::ExceededStepLimit => MachineDecision::UndecidedStepLimit,
+            HaltReason::ExceededSpaceLimit => MachineDecision::UndecidedSpaceLimit,
+            HaltReason::HaltState => MachineDecision::Halting,
             HaltReason::EmptyTransition => {
                 // We halted because we encountered an empty transition. This means that we need
                 // to create a bunch of new machines whose tape is the same, but with the missing
                 // transition defined.
                 let nodes = get_child_nodes(node.clone()).collect();
-                ExplorerResult::EmptyTransition(nodes)
+                MachineDecision::EmptyTransition(nodes)
             }
         }
     }
 
-    pub fn print_status(&self, result: ExplorerStepResult) {
+    pub fn print_status(&self, result: ExplorerStepInfo) {
         let node = result.node;
         let table = node.table;
         let stats = node.stats;
         let remaining = self.machines_to_check.len();
         let message = match result.halt_result {
-            ExplorerResult::Halting => format!(
+            MachineDecision::Halting => format!(
                 "halted ({} steps, {} cells)",
                 stats.steps_ran,
                 stats.space_used()
             ),
-            ExplorerResult::NonHalting => {
+            MachineDecision::NonHalting => {
                 format!("nonhalting")
             }
-            ExplorerResult::UndecidedStepLimit => {
+            MachineDecision::UndecidedStepLimit => {
                 format!("undecided (step limit)")
             }
-            ExplorerResult::UndecidedSpaceLimit => {
+            MachineDecision::UndecidedSpaceLimit => {
                 format!("undecided (space limit)")
             }
-            ExplorerResult::EmptyTransition(nodes) => {
+            MachineDecision::EmptyTransition(nodes) => {
                 format!("empty transition (added {} nodes)", nodes.len())
             }
         };
@@ -259,9 +259,9 @@ impl Explorer {
     }
 }
 
-pub struct ExplorerStepResult {
-    pub node: ExplorerState,
-    pub halt_result: ExplorerResult,
+pub struct ExplorerStepInfo {
+    pub node: ExplorerNode,
+    pub halt_result: MachineDecision,
 }
 
 /// Returns the number of transitions which are defined on the table.
@@ -296,12 +296,12 @@ fn visited_states(table: &Table) -> usize {
 }
 
 #[derive(Debug, Clone)]
-pub enum ExplorerResult {
+pub enum MachineDecision {
     Halting,
     NonHalting,
     UndecidedStepLimit,
     UndecidedSpaceLimit,
-    EmptyTransition(Vec<ExplorerState>),
+    EmptyTransition(Vec<ExplorerNode>),
 }
 
 /// Returns the target states that an undefined transition can opt to visit. This is the set of
@@ -324,7 +324,7 @@ fn get_target_states(table: &Table) -> Vec<State> {
     }
 }
 
-fn get_child_nodes(node: ExplorerState) -> impl Iterator<Item = ExplorerState> {
+fn get_child_nodes(node: ExplorerNode) -> impl Iterator<Item = ExplorerNode> {
     get_child_tables_for_transition(node.table, node.tape.state, node.tape.read()).map(
         move |table| {
             let mut new_node = node.clone();
@@ -368,7 +368,7 @@ fn get_child_tables_for_transition(
 #[cfg(test)]
 mod test {
     use crate::{
-        seed::{ExplorerResult, ExplorerState, HaltReason, SPACE_LIMIT, TIME_LIMIT},
+        seed::{ExplorerNode, HaltReason, MachineDecision, SPACE_LIMIT, TIME_LIMIT},
         turing::{State, Symbol, Table},
     };
 
@@ -382,7 +382,7 @@ mod test {
     fn test_bb_champion() {
         let table = Table::parse(BB5_CHAMPION).unwrap();
 
-        let explorer_state = &mut ExplorerState::new(table);
+        let explorer_state = &mut ExplorerNode::new(table);
         let halt_reason = explorer_state.run(None, None);
 
         assert_eq!(halt_reason, HaltReason::HaltState);
@@ -397,7 +397,7 @@ mod test {
         let result = explorer.step().unwrap();
         assert!(matches!(
             result.halt_result,
-            ExplorerResult::EmptyTransition(_)
+            MachineDecision::EmptyTransition(_)
         ));
     }
 
