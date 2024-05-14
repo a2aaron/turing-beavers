@@ -11,7 +11,7 @@ fn main() {
     // }
     for i in 0..1_000 {
         let result = explorer.step();
-        if i % 100 == 0 {
+        if i % 1 == 0 {
             explorer.print_status(result.unwrap());
         }
     }

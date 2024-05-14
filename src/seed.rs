@@ -160,8 +160,11 @@ impl Explorer {
     pub fn new() -> Explorer {
         let table = Table::parse(STARTING_MACHINE).unwrap();
         let machine = ExplorerState::new(table);
+
+        let mut machines_to_check = Vec::new();
+        machines_to_check.push(machine);
         Explorer {
-            machines_to_check: vec![machine],
+            machines_to_check,
             nonhalting: vec![],
             halting: vec![],
             undecided: vec![],
@@ -172,27 +175,17 @@ impl Explorer {
         if let Some(mut node) = self.machines_to_check.pop() {
             let halt_result = Self::step_node(&mut node);
 
-            let mut nodes_added = None;
-            match halt_result {
+            match halt_result.clone() {
                 ExplorerResult::Halting => self.halting.push(node.table),
                 ExplorerResult::NonHalting => self.nonhalting.push(node.table),
                 ExplorerResult::UndecidedStepLimit | ExplorerResult::UndecidedSpaceLimit => {
                     self.undecided.push(node.table)
                 }
-                ExplorerResult::EmptyTransition => {
-                    // We halted because we encountered an empty transition. This means that we need
-                    // to create a bunch of new machines whose tape is the same, but with the missing
-                    // transition defined.
-                    let mut nodes = get_child_nodes(node.clone());
-                    nodes_added = Some(nodes.size_hint().0);
-                    self.machines_to_check.extend(&mut nodes);
+                ExplorerResult::EmptyTransition(mut nodes) => {
+                    self.machines_to_check.append(&mut nodes)
                 }
             }
-            Some(ExplorerStepResult {
-                node,
-                nodes_added,
-                halt_result,
-            })
+            Some(ExplorerStepResult { node, halt_result })
         } else {
             None
         }
@@ -225,7 +218,13 @@ impl Explorer {
             HaltReason::ExceededStepLimit => ExplorerResult::UndecidedStepLimit,
             HaltReason::ExceededSpaceLimit => ExplorerResult::UndecidedSpaceLimit,
             HaltReason::HaltState => ExplorerResult::Halting,
-            HaltReason::EmptyTransition => ExplorerResult::EmptyTransition,
+            HaltReason::EmptyTransition => {
+                // We halted because we encountered an empty transition. This means that we need
+                // to create a bunch of new machines whose tape is the same, but with the missing
+                // transition defined.
+                let nodes = get_child_nodes(node.clone()).collect();
+                ExplorerResult::EmptyTransition(nodes)
+            }
         }
     }
 
@@ -249,11 +248,8 @@ impl Explorer {
             ExplorerResult::UndecidedSpaceLimit => {
                 format!("undecided (space limit)")
             }
-            ExplorerResult::EmptyTransition => {
-                format!(
-                    "empty transition (added {} nodes)",
-                    result.nodes_added.unwrap()
-                )
+            ExplorerResult::EmptyTransition(nodes) => {
+                format!("empty transition (added {} nodes)", nodes.len())
             }
         };
         let num_halt = self.halting.len();
@@ -261,17 +257,10 @@ impl Explorer {
         let num_undecided = self.undecided.len();
         println!("{table} - remain: {remaining:0>4} | halt: {num_halt:0>8} | nonhalt: {num_nonhalt:0>8} | undecided: {num_undecided:0>8} - {message}");
     }
-
-    pub fn print_machines_to_check(&self) {
-        for state in &self.machines_to_check {
-            state.print();
-        }
-    }
 }
 
 pub struct ExplorerStepResult {
     pub node: ExplorerState,
-    pub nodes_added: Option<usize>,
     pub halt_result: ExplorerResult,
 }
 
@@ -306,13 +295,13 @@ fn visited_states(table: &Table) -> usize {
         + e_visited as usize
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ExplorerResult {
     Halting,
     NonHalting,
     UndecidedStepLimit,
     UndecidedSpaceLimit,
-    EmptyTransition,
+    EmptyTransition(Vec<ExplorerState>),
 }
 
 /// Returns the target states that an undefined transition can opt to visit. This is the set of
@@ -406,7 +395,10 @@ mod test {
         let mut explorer = Explorer::new();
 
         let result = explorer.step().unwrap();
-        assert_eq!(ExplorerResult::EmptyTransition, result.halt_result);
+        assert!(matches!(
+            result.halt_result,
+            ExplorerResult::EmptyTransition(_)
+        ));
     }
 
     #[test]
