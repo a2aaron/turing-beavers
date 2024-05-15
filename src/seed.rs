@@ -1,3 +1,5 @@
+use crossbeam::queue::SegQueue;
+
 use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 
 /// The number of steps that the 4-State 2-Symbol Busy Beaver champion runs for before halting.
@@ -103,7 +105,7 @@ impl ExplorerNode {
         }
     }
 
-    fn decide(mut self) -> MachineDecision {
+    pub fn decide(mut self) -> MachineDecision {
         // We build a tree of all of the "interesting" machines using the following algorithm:
         // - Simulate a machine step-by-step. One of three things happen:
         //      1. The machine reaches the time or space limit. In this case, we mark the machine as
@@ -187,10 +189,11 @@ impl ExplorerNode {
 }
 
 pub struct Explorer {
-    pub machines_to_check: Vec<ExplorerNode>,
-    pub nonhalting: Vec<Table>,
-    pub halting: Vec<Table>,
-    pub undecided: Vec<Table>,
+    pub machines_to_check: SegQueue<ExplorerNode>,
+    pub nonhalting: SegQueue<Table>,
+    pub halting: SegQueue<Table>,
+    pub undecided_step: SegQueue<Table>,
+    pub undecided_space: SegQueue<Table>,
 }
 
 impl Explorer {
@@ -198,28 +201,30 @@ impl Explorer {
         let table = Table::parse(STARTING_MACHINE).unwrap();
         let machine = ExplorerNode::new(table);
 
-        let mut machines_to_check = Vec::new();
+        let machines_to_check = SegQueue::new();
         machines_to_check.push(machine);
         Explorer {
-            machines_to_check,
-            nonhalting: vec![],
-            halting: vec![],
-            undecided: vec![],
+            machines_to_check: machines_to_check,
+            nonhalting: SegQueue::new(),
+            halting: SegQueue::new(),
+            undecided_step: SegQueue::new(),
+            undecided_space: SegQueue::new(),
         }
     }
 
-    pub fn step_decide(&mut self) -> Option<ExplorerStepInfo> {
+    pub fn step_decide(&self) -> Option<ExplorerStepInfo> {
         if let Some(node) = self.machines_to_check.pop() {
             let decision = node.clone().decide();
 
             match decision.clone() {
                 MachineDecision::Halting => self.halting.push(node.table),
                 MachineDecision::NonHalting => self.nonhalting.push(node.table),
-                MachineDecision::UndecidedStepLimit | MachineDecision::UndecidedSpaceLimit => {
-                    self.undecided.push(node.table)
-                }
-                MachineDecision::EmptyTransition(mut nodes) => {
-                    self.machines_to_check.append(&mut nodes)
+                MachineDecision::UndecidedStepLimit => self.undecided_step.push(node.table),
+                MachineDecision::UndecidedSpaceLimit => self.undecided_space.push(node.table),
+                MachineDecision::EmptyTransition(nodes) => {
+                    for node in nodes {
+                        self.machines_to_check.push(node)
+                    }
                 }
             }
             Some(ExplorerStepInfo { node, decision })
@@ -228,11 +233,10 @@ impl Explorer {
         }
     }
 
-    pub fn print_status(&self, result: ExplorerStepInfo) {
+    pub fn print_status_and_step(&self, result: ExplorerStepInfo) {
         let node = result.node;
         let table = node.table;
         let stats = node.stats;
-        let remaining = self.machines_to_check.len();
         let message = match result.decision {
             MachineDecision::Halting => format!(
                 "halted ({} steps, {} cells)",
@@ -252,10 +256,26 @@ impl Explorer {
                 format!("empty transition (added {} nodes)", nodes.len())
             }
         };
+        let status = self.status();
+        println!("{table} - {status} - {message}");
+    }
+
+    pub fn status(&self) -> String {
+        let remaining = self.machines_to_check.len();
         let num_halt = self.halting.len();
         let num_nonhalt = self.nonhalting.len();
-        let num_undecided = self.undecided.len();
-        println!("{table} - remain: {remaining:0>4} | halt: {num_halt:0>8} | nonhalt: {num_nonhalt:0>8} | undecided: {num_undecided:0>8} - {message}");
+        let num_undecided_step = self.undecided_step.len();
+        let num_undecided_space = self.undecided_space.len();
+
+        format!("remain: {remaining: >8} | halt: {num_halt: >8} | nonhalt: {num_nonhalt: >8} | undecided step: {num_undecided_step: >8} | undecided space: {num_undecided_space: >8}")
+    }
+
+    pub fn total_decided(&self) -> usize {
+        let num_halt = self.halting.len();
+        let num_nonhalt = self.nonhalting.len();
+        let num_undecided_space = self.undecided_space.len();
+        let num_undecided_step = self.undecided_step.len();
+        num_halt + num_nonhalt + num_undecided_space + num_undecided_step
     }
 }
 
@@ -392,7 +412,7 @@ mod test {
 
     #[test]
     fn test_explorer() {
-        let mut explorer = Explorer::new();
+        let explorer = Explorer::new();
 
         let result = explorer.step_decide().unwrap();
         assert!(matches!(
