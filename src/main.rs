@@ -54,21 +54,28 @@ fn spawn_timer(explorer: Arc<Explorer>) -> JoinHandle<()> {
 }
 
 fn spawn_thread(thread_i: usize, explorer: Arc<Explorer>) -> JoinHandle<()> {
-    std::thread::spawn(move || loop {
-        while !explorer.machines_to_check.is_empty() {
-            let result = explorer.step_decide();
-            match result {
-                Some(_result) => continue,
-                None => break,
+    std::thread::spawn(move || {
+        let now = Instant::now();
+        loop {
+            while !explorer.machines_to_check.is_empty() {
+                if now.elapsed().as_secs() > 10 {
+                    return;
+                }
+
+                let result = explorer.step_decide();
+                match result {
+                    Some(_result) => continue,
+                    None => break,
+                }
             }
-        }
-        println!("Thread {thread_i} sleeping -- no work in queue");
-        explorer.cond_var.wait();
-        if explorer.done() {
-            println!("Thread {thread_i} exiting");
-            break;
-        } else {
-            println!("Thread {thread_i} restarting");
+            println!("Thread {thread_i} sleeping -- no work in queue");
+            explorer.cond_var.wait();
+            if explorer.done() {
+                println!("Thread {thread_i} exiting");
+                break;
+            } else {
+                println!("Thread {thread_i} restarting");
+            }
         }
     })
 }
