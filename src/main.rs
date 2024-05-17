@@ -1,38 +1,66 @@
 use std::{
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use turing_beavers::seed::Explorer;
+use turing_beavers::seed::{Explorer, Stats};
 
 fn spawn_timer(explorer: Arc<Explorer>) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut last_count = 0;
         let total_time = Instant::now();
         let mut now = Instant::now();
+
+        let mut last = Stats::new();
+        let mut last_total_steps = 0;
+        let mut last_total_space = 0;
+
         loop {
-            let count = explorer.total_decided();
-            let delta = count - last_count;
-            let rate = delta as f32 / total_time.elapsed().as_secs_f32();
+            let stats = explorer.stats();
+            let delta = stats - last;
+
+            let decided = stats.decided();
+
+            let total_steps = explorer.total_steps.load(Ordering::Relaxed);
+            let total_space = explorer.total_space.load(Ordering::Relaxed);
+
+            let delta_total_space = total_space - last_total_space;
+            let delta_total_steps = total_steps - last_total_steps;
+
+            // let avg_steps = explorer.total_steps.load(Ordering::Relaxed) as f32 / decided as f32;
+            // let avg_spaces = explorer.total_space.load(Ordering::Relaxed) as f32 / decided as f32;
+            let rate = decided as f32 / total_time.elapsed().as_secs_f32();
+
+            let status = format!("remain: {: >6} | halt: {: >6} | nonhalt: {: >6} | undecided step: {: >6} | undecided space: {: >6}", 
+                delta.remaining,
+                delta.halt,
+                delta.nonhalt,
+                delta.undecided_step,
+                delta.undecided_space
+            );
+
             println!(
-                "{} ({} in {:?}, total {} at {}/sec)",
-                explorer.status(),
-                delta,
-                now.elapsed(),
-                count,
+                "{} | space: {delta_total_space:} | steps: {delta_total_steps:} (decided {} in {:.1}s, total {:} at {:.2}/s)",
+                status,
+                delta.decided(),
+                now.elapsed().as_secs_f32(),
+                decided,
                 rate
             );
+
             now = Instant::now();
-            last_count = count;
+            last = stats;
+            last_total_space = total_space;
+            last_total_steps = total_steps;
+
             std::thread::sleep(Duration::from_secs(1));
         }
     })
 }
 
-fn spawn_thread(thread_i: usize, explorer: Arc<Explorer>) -> JoinHandle<()> {
+fn spawn_thread(_thread_i: usize, explorer: Arc<Explorer>) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        while !explorer.machines_to_check.is_empty() && explorer.total_decided() < 70_000 {
+        while !explorer.machines_to_check.is_empty() && explorer.stats().decided() < 70_000 {
             let result = explorer.step_decide();
             match result {
                 Some(_result) => continue,
@@ -54,5 +82,4 @@ fn main() {
     for thread in threads {
         thread.join().unwrap()
     }
-    println!("{}", explorer.status());
 }

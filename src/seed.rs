@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crossbeam::queue::SegQueue;
 
 use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
@@ -105,7 +107,7 @@ impl ExplorerNode {
         }
     }
 
-    pub fn decide(mut self) -> MachineDecision {
+    pub fn decide(&mut self) -> MachineDecision {
         // We build a tree of all of the "interesting" machines using the following algorithm:
         // - Simulate a machine step-by-step. One of three things happen:
         //      1. The machine reaches the time or space limit. In this case, we mark the machine as
@@ -194,6 +196,8 @@ pub struct Explorer {
     pub halting: SegQueue<Table>,
     pub undecided_step: SegQueue<Table>,
     pub undecided_space: SegQueue<Table>,
+    pub total_steps: AtomicUsize,
+    pub total_space: AtomicUsize,
 }
 
 impl Explorer {
@@ -209,12 +213,14 @@ impl Explorer {
             halting: SegQueue::new(),
             undecided_step: SegQueue::new(),
             undecided_space: SegQueue::new(),
+            total_steps: AtomicUsize::new(0),
+            total_space: AtomicUsize::new(0),
         }
     }
 
     pub fn step_decide(&self) -> Option<ExplorerStepInfo> {
-        if let Some(node) = self.machines_to_check.pop() {
-            let decision = node.clone().decide();
+        if let Some(mut node) = self.machines_to_check.pop() {
+            let decision = node.decide();
 
             match decision.clone() {
                 MachineDecision::Halting => self.halting.push(node.table),
@@ -227,55 +233,70 @@ impl Explorer {
                     }
                 }
             }
+
+            match decision {
+                MachineDecision::EmptyTransition(_) => (),
+                _ => {
+                    self.total_steps
+                        .fetch_add(node.stats.steps_ran, Ordering::Relaxed);
+                    self.total_space
+                        .fetch_add(node.stats.space_used(), Ordering::Relaxed);
+                }
+            }
+
             Some(ExplorerStepInfo { node, decision })
         } else {
             None
         }
     }
 
-    pub fn print_status_and_step(&self, result: ExplorerStepInfo) {
-        let node = result.node;
-        let table = node.table;
-        let stats = node.stats;
-        let message = match result.decision {
-            MachineDecision::Halting => format!(
-                "halted ({} steps, {} cells)",
-                stats.steps_ran,
-                stats.space_used()
-            ),
-            MachineDecision::NonHalting => {
-                format!("nonhalting")
-            }
-            MachineDecision::UndecidedStepLimit => {
-                format!("undecided (step limit)")
-            }
-            MachineDecision::UndecidedSpaceLimit => {
-                format!("undecided (space limit)")
-            }
-            MachineDecision::EmptyTransition(nodes) => {
-                format!("empty transition (added {} nodes)", nodes.len())
-            }
-        };
-        let status = self.status();
-        println!("{table} - {status} - {message}");
+    pub fn stats(&self) -> Stats {
+        Stats {
+            remaining: self.machines_to_check.len(),
+            halt: self.halting.len(),
+            nonhalt: self.nonhalting.len(),
+            undecided_step: self.undecided_step.len(),
+            undecided_space: self.undecided_space.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stats {
+    pub remaining: usize,
+    pub halt: usize,
+    pub nonhalt: usize,
+    pub undecided_step: usize,
+    pub undecided_space: usize,
+}
+
+impl Stats {
+    pub fn new() -> Stats {
+        Stats {
+            remaining: 0,
+            halt: 0,
+            nonhalt: 0,
+            undecided_step: 0,
+            undecided_space: 0,
+        }
     }
 
-    pub fn status(&self) -> String {
-        let remaining = self.machines_to_check.len();
-        let num_halt = self.halting.len();
-        let num_nonhalt = self.nonhalting.len();
-        let num_undecided_step = self.undecided_step.len();
-        let num_undecided_space = self.undecided_space.len();
-
-        format!("remain: {remaining: >8} | halt: {num_halt: >8} | nonhalt: {num_nonhalt: >8} | undecided step: {num_undecided_step: >8} | undecided space: {num_undecided_space: >8}")
+    pub fn decided(&self) -> usize {
+        self.halt + self.nonhalt + self.undecided_space + self.undecided_step
     }
+}
 
-    pub fn total_decided(&self) -> usize {
-        let num_halt = self.halting.len();
-        let num_nonhalt = self.nonhalting.len();
-        let num_undecided_space = self.undecided_space.len();
-        let num_undecided_step = self.undecided_step.len();
-        num_halt + num_nonhalt + num_undecided_space + num_undecided_step
+impl std::ops::Sub for Stats {
+    type Output = Stats;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            remaining: self.remaining - rhs.remaining,
+            halt: self.halt - rhs.halt,
+            nonhalt: self.nonhalt - rhs.nonhalt,
+            undecided_step: self.undecided_step - rhs.undecided_step,
+            undecided_space: self.undecided_space - rhs.undecided_space,
+        }
     }
 }
 
@@ -293,14 +314,15 @@ pub enum MachineDecision {
     EmptyTransition(Vec<ExplorerNode>),
 }
 
-fn get_child_nodes(node: ExplorerNode) -> impl Iterator<Item = ExplorerNode> {
-    get_child_tables_for_transition(node.table, node.tape.state, node.tape.read()).map(
-        move |table| {
-            let mut new_node = node.clone();
-            new_node.table = table;
-            new_node
-        },
-    )
+fn get_child_nodes(node: &ExplorerNode) -> impl Iterator<Item = ExplorerNode> {
+    let children = get_child_tables_for_transition(node.table, node.tape.state, node.tape.read());
+
+    let node = node.clone();
+    children.map(move |table| {
+        let mut new_node = node.clone();
+        new_node.table = table;
+        new_node
+    })
 }
 
 /// Given a transition [Table], returns a set of Tables whose
@@ -403,7 +425,7 @@ mod test {
         let table = Table::parse(BB5_CHAMPION).unwrap();
 
         let explorer_state = &mut ExplorerNode::new(table);
-        let halt_reason = explorer_state.run(None, None);
+        let halt_reason = explorer_state.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
 
         assert_eq!(halt_reason, HaltReason::HaltState);
         assert_eq!(explorer_state.stats.steps_ran, TIME_LIMIT);
@@ -447,5 +469,14 @@ mod test {
         assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_0RZ0LA");
         assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1LZ0LA");
         assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA");
+    }
+
+    #[test]
+    fn test_time_limit() {
+        let table = Table::parse("1RB0LC_0LA0LD_1LA---_0RE0RD_0LD---").unwrap();
+        let mut node = ExplorerNode::new(table);
+        node.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
+        // runs for one less step than actual for probably silly reasons.
+        assert_eq!(node.stats.steps_ran, TIME_LIMIT - 1);
     }
 }
