@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Condvar, Mutex,
+};
 
 use crossbeam::queue::SegQueue;
 
@@ -190,6 +193,47 @@ impl ExplorerNode {
     }
 }
 
+pub struct EmptyQueueCondvar {
+    cond_var: Condvar,
+    num_running: Mutex<usize>,
+    done_forever: AtomicBool,
+}
+
+impl EmptyQueueCondvar {
+    fn new(num_threads: usize) -> EmptyQueueCondvar {
+        EmptyQueueCondvar {
+            cond_var: Condvar::new(),
+            num_running: Mutex::new(num_threads),
+            done_forever: AtomicBool::new(false),
+        }
+    }
+
+    pub fn wait(&self) {
+        let mut guard = self.num_running.lock().unwrap();
+        *guard -= 1;
+
+        // If there are no workers running, then no one can add work to wake up everyone
+        // (so wake everyone up so they can exit--they only went to sleep in order to wait on more work)
+        if *guard == 0 {
+            // This needs to be acquire, since
+            self.done_forever.store(true, Ordering::Release);
+            self.cond_var.notify_all();
+        } else {
+            // Otherwise, let the worker wait until there's more work to be done
+            let mut guard = self.cond_var.wait(guard).unwrap();
+            *guard += 1;
+        }
+    }
+
+    // Wake up all worker threads due to there being work in the queue again
+    // This will probably only happen at the start, where there is only 1 machine in the queue to
+    // start with (or maybe also later, i haven't actually run
+    // this program to completion ever).
+    pub fn notify_work_ready(&self) {
+        self.cond_var.notify_all();
+    }
+}
+
 pub struct Explorer {
     pub machines_to_check: SegQueue<ExplorerNode>,
     pub nonhalting: SegQueue<Table>,
@@ -198,23 +242,26 @@ pub struct Explorer {
     pub undecided_space: SegQueue<Table>,
     pub total_steps: AtomicUsize,
     pub total_space: AtomicUsize,
+
+    pub cond_var: EmptyQueueCondvar,
 }
 
 impl Explorer {
-    pub fn new() -> Explorer {
+    pub fn new(num_threads: usize) -> Explorer {
         let table = Table::parse(STARTING_MACHINE).unwrap();
         let machine = ExplorerNode::new(table);
 
         let machines_to_check = SegQueue::new();
         machines_to_check.push(machine);
         Explorer {
-            machines_to_check: machines_to_check,
+            machines_to_check,
             nonhalting: SegQueue::new(),
             halting: SegQueue::new(),
             undecided_step: SegQueue::new(),
             undecided_space: SegQueue::new(),
             total_steps: AtomicUsize::new(0),
             total_space: AtomicUsize::new(0),
+            cond_var: EmptyQueueCondvar::new(num_threads),
         }
     }
 
@@ -231,6 +278,7 @@ impl Explorer {
                     for node in nodes {
                         self.machines_to_check.push(node)
                     }
+                    self.cond_var.notify_work_ready();
                 }
             }
 
@@ -258,6 +306,10 @@ impl Explorer {
             undecided_step: self.undecided_step.len(),
             undecided_space: self.undecided_space.len(),
         }
+    }
+
+    pub fn done(&self) -> bool {
+        self.cond_var.done_forever.load(Ordering::Acquire)
     }
 }
 
@@ -434,7 +486,7 @@ mod test {
 
     #[test]
     fn test_explorer() {
-        let explorer = Explorer::new();
+        let explorer = Explorer::new(1);
 
         let result = explorer.step_decide().unwrap();
         assert!(matches!(
