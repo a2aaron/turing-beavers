@@ -12,3 +12,6 @@ rayon = "1.10.0"
 [profile.release]
 debug = true
 split-debuginfo = "packed"
+
+[dev-dependencies]
+rand = "0.8.5"

@@ -5,7 +5,7 @@ use std::sync::{
 
 use crossbeam::queue::SegQueue;
 
-use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
+use crate::turing::{Direction, State, Symbol, Table, Tape};
 
 /// The number of steps that the 4-State 2-Symbol Busy Beaver champion runs for before halting.
 /// This is useful because any 5-State machine must access it's 5th state within 107 steps or else
@@ -14,15 +14,17 @@ use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 /// being the champion.)
 pub const BUSY_BEAVER_FOUR_STEPS: usize = 107;
 
-/// The number of steps that [BB5_CHAMPION] runs for before halting.
-pub const TIME_LIMIT: usize = 47_176_870;
+/// The number of steps that [BB5_CHAMPION] runs for before halting, plus one.
+pub const TIME_LIMIT: usize = BB5_STEPS + 1;
 /// The number of unique cells visited by the [BB5_CHAMPION]. Note that this is not how many ones
 /// that the champion writes to the tape, rather it's every cell written to (even cells which are
 /// written to but do not have their value changed). Hence, this will be larger than the number of
 /// ones written)
-pub const SPACE_LIMIT: usize = 12_289;
+pub const SPACE_LIMIT: usize = BB5_SPACE + 1;
 /// The current contender champion for the 5-State 2-Symbol Busy Beaver.
 pub const BB5_CHAMPION: &str = "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA";
+pub const BB5_STEPS: usize = 47_176_870;
+pub const BB5_SPACE: usize = 12_289;
 /// The starting machine to use when doing the phase 1 seed generation. This is the machine with
 /// all empty transitions, except for the "state A + symbol 0" transition, which is
 /// "write 1 + move right + state b".
@@ -50,8 +52,9 @@ pub fn step(tape: &mut Tape, table: &Table) -> StepResult {
     let action = table.get(tape.state, tape.read());
 
     match action {
-        Some(Transition(cell, direction, state)) => {
-            tape.write(cell);
+        Some(action) => {
+            let (symbol, direction, state) = action.into();
+            tape.write(symbol);
             tape.shift(direction);
             tape.set_state(state);
             StepResult::Continue
@@ -154,13 +157,13 @@ impl ExplorerNode {
                 StepResult::Empty => return HaltReason::EmptyTransition,
                 StepResult::Continue => {
                     if let Some(max_steps) = max_steps
-                        && self.stats.steps_ran > max_steps
+                        && self.stats.steps_ran >= max_steps
                     {
                         return HaltReason::ExceededStepLimit;
                     }
 
                     if let Some(max_space) = max_space
-                        && self.stats.space_used() > max_space
+                        && self.stats.space_used() >= max_space
                     {
                         return HaltReason::ExceededSpaceLimit;
                     }
@@ -393,10 +396,10 @@ fn get_child_tables_for_transition(
     // Turn each target state into 0LX, 0RX, 1LX, and 1RX
     let transitions = target_states.into_iter().flat_map(|target_state| {
         [
-            Transition(Symbol::Zero, Direction::Left, target_state),
-            Transition(Symbol::Zero, Direction::Right, target_state),
-            Transition(Symbol::One, Direction::Left, target_state),
-            Transition(Symbol::One, Direction::Right, target_state),
+            (Symbol::Zero, Direction::Left, target_state).into(),
+            (Symbol::Zero, Direction::Right, target_state).into(),
+            (Symbol::One, Direction::Left, target_state).into(),
+            (Symbol::One, Direction::Right, target_state).into(),
         ]
     });
     // Replace the undefined transition with the transitions we just created.
@@ -462,7 +465,10 @@ fn defined_transitions(table: &Table) -> usize {
 #[cfg(test)]
 mod test {
     use crate::{
-        seed::{ExplorerNode, HaltReason, MachineDecision, SPACE_LIMIT, TIME_LIMIT},
+        seed::{
+            ExplorerNode, HaltReason, MachineDecision, BB5_SPACE, BB5_STEPS, SPACE_LIMIT,
+            TIME_LIMIT,
+        },
         turing::{State, Symbol, Table},
     };
 
@@ -480,8 +486,8 @@ mod test {
         let halt_reason = explorer_state.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
 
         assert_eq!(halt_reason, HaltReason::HaltState);
-        assert_eq!(explorer_state.stats.steps_ran, TIME_LIMIT);
-        assert_eq!(explorer_state.stats.space_used(), SPACE_LIMIT);
+        assert_eq!(explorer_state.stats.steps_ran, BB5_STEPS);
+        assert_eq!(explorer_state.stats.space_used(), BB5_SPACE);
     }
 
     #[test]
@@ -527,8 +533,31 @@ mod test {
     fn test_time_limit() {
         let table = Table::parse("1RB0LC_0LA0LD_1LA---_0RE0RD_0LD---").unwrap();
         let mut node = ExplorerNode::new(table);
-        node.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
+        let reason = node.run(Some(TIME_LIMIT), None);
+        assert_eq!(reason, HaltReason::ExceededStepLimit);
         // runs for one less step than actual for probably silly reasons.
-        assert_eq!(node.stats.steps_ran, TIME_LIMIT - 1);
+        assert_eq!(node.stats.steps_ran, TIME_LIMIT);
+    }
+
+    #[test]
+    fn test_space_limit_right() {
+        let table = Table::parse("1RA1RA_------_------_------_------").unwrap();
+        let mut node = ExplorerNode::new(table);
+        let reason = node.run(None, Some(SPACE_LIMIT));
+        assert_eq!(reason, HaltReason::ExceededSpaceLimit);
+        // runs for one less step than actual for probably silly reasons.
+        assert_eq!(node.stats.space_used(), SPACE_LIMIT);
+        assert_eq!(node.stats.steps_ran, SPACE_LIMIT);
+    }
+
+    #[test]
+    fn test_space_limit_left() {
+        let table = Table::parse("1LA1LA_------_------_------_------").unwrap();
+        let mut node = ExplorerNode::new(table);
+        let reason = node.run(None, Some(SPACE_LIMIT));
+        assert_eq!(reason, HaltReason::ExceededSpaceLimit);
+        // runs for one less step than actual for probably silly reasons.
+        assert_eq!(node.stats.space_used(), SPACE_LIMIT);
+        assert_eq!(node.stats.steps_ran, SPACE_LIMIT);
     }
 }
