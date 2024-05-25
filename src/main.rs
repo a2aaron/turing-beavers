@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 use std::{
     sync::{atomic::Ordering, Arc},
     thread::JoinHandle,
@@ -53,31 +55,61 @@ fn spawn_timer(explorer: Arc<Explorer>) -> JoinHandle<()> {
     })
 }
 
-fn spawn_thread(thread_i: usize, explorer: Arc<Explorer>) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        let now = Instant::now();
-        loop {
-            while !explorer.machines_to_check.is_empty() {
-                if now.elapsed().as_secs() > 10 {
-                    return;
-                }
-
-                let result = explorer.step_decide();
-                match result {
-                    Some(_result) => continue,
-                    None => break,
-                }
+fn spawn_thread(mut config: WorkerConfig, explorer: Arc<Explorer>) -> JoinHandle<()> {
+    std::thread::spawn(move || loop {
+        while !explorer.machines_to_check.is_empty() {
+            if config.should_exit() {
+                println!("Thread {} exiting", config.id);
+                return;
             }
-            println!("Thread {thread_i} sleeping -- no work in queue");
-            explorer.cond_var.wait();
-            if explorer.done() {
-                println!("Thread {thread_i} exiting");
-                break;
-            } else {
-                println!("Thread {thread_i} restarting");
+
+            let result = explorer.step_decide();
+            match result {
+                Some(_result) => continue,
+                None => break,
             }
         }
+
+        println!("Thread {} sleeping -- no work in queue", config.id);
+        explorer.wait_for_work.wait();
+        if explorer.done() {
+            config.set_all_work_done();
+        } else {
+            println!("Thread {} restarting", config.id);
+        }
     })
+}
+
+struct WorkerConfig {
+    id: usize,
+    max_run_time: Option<u64>,
+    now: Instant,
+    all_work_done: bool,
+}
+
+impl WorkerConfig {
+    fn should_exit(&self) -> bool {
+        let exit_due_to_timer = if let Some(max_run_time) = self.max_run_time {
+            self.now.elapsed().as_secs() > max_run_time
+        } else {
+            false
+        };
+
+        exit_due_to_timer || self.all_work_done
+    }
+
+    fn set_all_work_done(&mut self) {
+        self.all_work_done = true;
+    }
+
+    fn new(thread_i: usize, max_run_time: Option<u64>) -> WorkerConfig {
+        WorkerConfig {
+            id: thread_i,
+            max_run_time,
+            now: Instant::now(),
+            all_work_done: false,
+        }
+    }
 }
 
 fn main() {
@@ -87,7 +119,8 @@ fn main() {
 
     let mut threads = vec![];
     for i in 0..num_threads {
-        threads.push(spawn_thread(i, explorer.clone()));
+        let config = WorkerConfig::new(i, Some(5));
+        threads.push(spawn_thread(config, explorer.clone()));
     }
 
     for thread in threads {

@@ -246,7 +246,7 @@ pub struct Explorer {
     pub total_steps: AtomicUsize,
     pub total_space: AtomicUsize,
 
-    pub cond_var: EmptyQueueCondvar,
+    pub wait_for_work: EmptyQueueCondvar,
 }
 
 impl Explorer {
@@ -264,7 +264,7 @@ impl Explorer {
             undecided_space: SegQueue::new(),
             total_steps: AtomicUsize::new(0),
             total_space: AtomicUsize::new(0),
-            cond_var: EmptyQueueCondvar::new(num_threads),
+            wait_for_work: EmptyQueueCondvar::new(num_threads),
         }
     }
 
@@ -281,7 +281,7 @@ impl Explorer {
                     for node in nodes {
                         self.machines_to_check.push(node)
                     }
-                    self.cond_var.notify_work_ready();
+                    self.wait_for_work.notify_work_ready();
                 }
             }
 
@@ -312,7 +312,7 @@ impl Explorer {
     }
 
     pub fn done(&self) -> bool {
-        self.cond_var.done_forever.load(Ordering::Acquire)
+        self.wait_for_work.done_forever.load(Ordering::Acquire)
     }
 }
 
