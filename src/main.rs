@@ -11,7 +11,7 @@ use turing_beavers::seed::{Explorer, Stats};
 fn spawn_timer(explorer: Arc<Explorer>) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut now = Instant::now();
-
+        let total = Instant::now();
         let mut last = Stats::new();
         let mut last_total_steps = 0;
 
@@ -24,10 +24,12 @@ fn spawn_timer(explorer: Arc<Explorer>) -> JoinHandle<()> {
             let total_steps = explorer.total_steps.load(Ordering::Relaxed);
 
             let delta_total_steps = total_steps - last_total_steps;
-            let elapsed = now.elapsed().as_secs_f32();
+            let this_elapsed = now.elapsed().as_secs_f32();
+            let total_elapsed = total.elapsed().as_secs_f32();
 
-            let total_step_rate = delta_total_steps as f32 / elapsed;
-            let rate = decided as f32 / elapsed;
+            let this_step_rate = delta_total_steps as f32 / this_elapsed;
+            let rate = decided as f32 / total_elapsed;
+            let total_step_rate = total_steps as f32 / total_elapsed;
 
             let status = format!("remain: {: >6} | halt: {: >6} | nonhalt: {: >6} | undecided step: {: >6} | undecided space: {: >6}", 
                 stats.remaining,
@@ -38,12 +40,13 @@ fn spawn_timer(explorer: Arc<Explorer>) -> JoinHandle<()> {
             );
 
             println!(
-                "{} | steps/s: {total_step_rate: >9.0} (decided {} in {:.1}s, total {:} at {:.2}/s)",
+                "{} | steps/s: {this_step_rate: >9.0} (decided {} in {:.1}s, total {:} at {:.0}/s, {:.0} steps/s)",
                 status,
                 delta.decided(),
-                elapsed,
+                this_elapsed,
                 decided,
-                rate
+                rate,
+                total_step_rate,
             );
 
             now = Instant::now();
@@ -119,7 +122,7 @@ fn main() {
 
     let mut threads = vec![];
     for i in 0..num_threads {
-        let config = WorkerConfig::new(i, Some(5));
+        let config = WorkerConfig::new(i, Some(30));
         threads.push(spawn_thread(config, explorer.clone()));
     }
 

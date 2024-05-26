@@ -79,7 +79,8 @@ enum HaltReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunStats {
-    pub steps_ran: usize,
+    steps_ran: usize,
+    prev_steps: usize,
     pub max_index: isize,
     pub min_index: isize,
 }
@@ -87,9 +88,15 @@ impl RunStats {
     fn new() -> RunStats {
         RunStats {
             steps_ran: 0,
+            prev_steps: 0,
             min_index: 0,
             max_index: 0,
         }
+    }
+    fn get_delta_steps(&mut self) -> usize {
+        let delta_steps = self.steps_ran - self.prev_steps;
+        self.prev_steps = self.steps_ran;
+        delta_steps
     }
 
     fn space_used(&self) -> usize {
@@ -289,7 +296,7 @@ impl Explorer {
                 MachineDecision::EmptyTransition(_) => (),
                 _ => {
                     self.total_steps
-                        .fetch_add(node.stats.steps_ran, Ordering::Relaxed);
+                        .fetch_add(node.stats.get_delta_steps(), Ordering::Relaxed);
                     self.total_space
                         .fetch_add(node.stats.space_used(), Ordering::Relaxed);
                 }
@@ -374,6 +381,8 @@ fn get_child_nodes(node: &ExplorerNode) -> impl Iterator<Item = ExplorerNode> {
 
     let node = node.clone();
     children.map(move |table| {
+        // TODO: Explore effects of using ExplorerNode::new(table) here instead
+        // Using new seems to make this much slower??
         let mut new_node = node.clone();
         new_node.table = table;
         new_node

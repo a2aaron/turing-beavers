@@ -346,6 +346,8 @@ impl Tape {
     /// be located at index 0.
     pub fn new() -> Tape {
         Tape {
+            // TODO: Explore effect of using vec![] instead of array literal
+            // It seems like using vec![] is slightly faster?
             tape: [0; TAPE_PHYSICAL_LENGTH].into(),
             index: SPACE_LIMIT,
             state: State::A,
