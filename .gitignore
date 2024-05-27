@@ -2,3 +2,4 @@
 flamegraph.svg
 out.txt
 *.s
+*.asm
