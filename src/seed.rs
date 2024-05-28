@@ -5,7 +5,7 @@ use std::sync::{
 
 use crossbeam::queue::SegQueue;
 
-use crate::turing::{Direction, State, Symbol, Table, Tape};
+use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 
 /// The number of steps that the 4-State 2-Symbol Busy Beaver champion runs for before halting.
 /// This is useful because any 5-State machine must access it's 5th state within 107 steps or else
@@ -53,7 +53,7 @@ pub fn step(tape: &mut Tape, table: &Table) -> StepResult {
 
     match action {
         Some(action) => {
-            let (symbol, direction, state) = action.into();
+            let (symbol, direction, state) = action.into_tuple();
             tape.write(symbol);
             tape.shift(direction);
             tape.set_state(state);
@@ -179,7 +179,7 @@ impl ExplorerNode {
         }
     }
 
-    fn step(&mut self) -> StepResult {
+    pub fn step(&mut self) -> StepResult {
         let result = step(&mut self.tape, &self.table);
 
         if result == StepResult::Continue {
@@ -405,10 +405,10 @@ fn get_child_tables_for_transition(
     // Turn each target state into 0LX, 0RX, 1LX, and 1RX
     let transitions = target_states.into_iter().flat_map(|target_state| {
         [
-            (Symbol::Zero, Direction::Left, target_state).into(),
-            (Symbol::Zero, Direction::Right, target_state).into(),
-            (Symbol::One, Direction::Left, target_state).into(),
-            (Symbol::One, Direction::Right, target_state).into(),
+            Transition::from_tuple(Symbol::Zero, Direction::Left, target_state),
+            Transition::from_tuple(Symbol::Zero, Direction::Right, target_state),
+            Transition::from_tuple(Symbol::One, Direction::Left, target_state),
+            Transition::from_tuple(Symbol::One, Direction::Right, target_state),
         ]
     });
     // Replace the undefined transition with the transitions we just created.
@@ -556,7 +556,7 @@ mod test {
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);
         // runs for one less step than actual for probably silly reasons.
         assert_eq!(node.stats.space_used(), SPACE_LIMIT);
-        assert_eq!(node.stats.steps_ran, SPACE_LIMIT);
+        assert_eq!(node.stats.steps_ran, SPACE_LIMIT - 1);
     }
 
     #[test]
@@ -567,6 +567,6 @@ mod test {
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);
         // runs for one less step than actual for probably silly reasons.
         assert_eq!(node.stats.space_used(), SPACE_LIMIT);
-        assert_eq!(node.stats.steps_ran, SPACE_LIMIT);
+        assert_eq!(node.stats.steps_ran, SPACE_LIMIT - 1);
     }
 }

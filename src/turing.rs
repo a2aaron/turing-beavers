@@ -60,37 +60,45 @@ impl Display for State {
 }
 
 /// A transition edge in the transition table
+/// Bit layout
+/// 000 000 0 0
+/// ^^^ ^^^ ^ ^-- direction (0 = Left, 1 = Right)
+///  |   |  |
+///  |   |  +---- symbol    (0 = Zero, 1 = One)
+///  |   +------- state     (0 = A, 1 = B, 2 = C, 3 = D, 4 = E, 5 = Halt)
+///  +----------- unused
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Transition {
-    L0A,
-    R0A,
-    L1A,
-    R1A,
-    L0B,
-    R0B,
-    L1B,
-    R1B,
-    L0C,
-    R0C,
-    L1C,
-    R1C,
-    L0D,
-    R0D,
-    L1D,
-    R1D,
-    L0E,
-    R0E,
-    L1E,
-    R1E,
-    L0Z,
-    R0Z,
-    L1Z,
-    R1Z,
+    L0A = 0b000_000_0_0,
+    R0A = 0b000_000_0_1,
+    L1A = 0b000_000_1_0,
+    R1A = 0b000_000_1_1,
+    L0B = 0b000_001_0_0,
+    R0B = 0b000_001_0_1,
+    L1B = 0b000_001_1_0,
+    R1B = 0b000_001_1_1,
+    L0C = 0b000_010_0_0,
+    R0C = 0b000_010_0_1,
+    L1C = 0b000_010_1_0,
+    R1C = 0b000_010_1_1,
+    L0D = 0b000_011_0_0,
+    R0D = 0b000_011_0_1,
+    L1D = 0b000_011_1_0,
+    R1D = 0b000_011_1_1,
+    L0E = 0b000_100_0_0,
+    R0E = 0b000_100_0_1,
+    L1E = 0b000_100_1_0,
+    R1E = 0b000_100_1_1,
+    L0Z = 0b000_101_0_0,
+    R0Z = 0b000_101_0_1,
+    L1Z = 0b000_101_1_0,
+    R1Z = 0b000_101_1_1,
 }
 
-impl From<Transition> for (Symbol, Direction, State) {
-    fn from(value: Transition) -> Self {
-        match value {
+impl Transition {
+    pub fn into_tuple(&self) -> (Symbol, Direction, State) {
+        match self {
             Transition::L0A => (Symbol::Zero, Direction::Left, State::A),
             Transition::R0A => (Symbol::Zero, Direction::Right, State::A),
             Transition::L1A => (Symbol::One, Direction::Left, State::A),
@@ -117,10 +125,39 @@ impl From<Transition> for (Symbol, Direction, State) {
             Transition::R1Z => (Symbol::One, Direction::Right, State::Halt),
         }
     }
-}
 
-impl From<(Symbol, Direction, State)> for Transition {
-    fn from((symbol, direction, state): (Symbol, Direction, State)) -> Self {
+    // TODO: This is actually slower than the giant match??
+    pub fn into_tuple_2(&self) -> (Symbol, Direction, State) {
+        let value = *self as u8;
+        let direction = value & 0b000_000_0_1;
+        let symbol = (value & 0b000_000_1_0) >> 1;
+        let state = (value & 0b000_111_0_0) >> 2;
+
+        let direction = if direction == 0 {
+            Direction::Left
+        } else {
+            Direction::Right
+        };
+
+        let symbol = if symbol == 0 {
+            Symbol::Zero
+        } else {
+            Symbol::One
+        };
+
+        let state = match state {
+            0 => State::A,
+            1 => State::B,
+            2 => State::C,
+            3 => State::D,
+            4 => State::E,
+            5 => State::Halt,
+            _ => unreachable!("guarenteed by all possible values of the Transition enum"),
+        };
+        (symbol, direction, state)
+    }
+
+    pub fn from_tuple(symbol: Symbol, direction: Direction, state: State) -> Transition {
         match (direction, symbol, state) {
             (Direction::Left, Symbol::Zero, State::A) => Transition::L0A,
             (Direction::Left, Symbol::Zero, State::B) => Transition::L0B,
@@ -253,7 +290,7 @@ impl Table {
                 _ => Err(()),
             }?;
 
-            Ok(Some((cell, direction, state).into()))
+            Ok(Some(Transition::from_tuple(cell, direction, state)))
         }
 
         fn parse_group(group: &str) -> Result<(Action, Action), ()> {
@@ -297,7 +334,7 @@ impl Display for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fn display_action(action: &Action) -> String {
             if let Some(action) = action {
-                let (symbol, direction, state) = (*action).into();
+                let (symbol, direction, state) = action.into_tuple();
                 format!("{symbol}{direction}{state}")
             } else {
                 "---".to_string()
@@ -407,7 +444,7 @@ mod test {
         turing::{Direction, Symbol, Tape},
     };
 
-    use super::{State, TAPE_LOGICAL_LENGTH};
+    use super::{State, Transition, TAPE_LOGICAL_LENGTH};
 
     pub struct SimpleTape {
         tape: [Symbol; TAPE_LOGICAL_LENGTH],
@@ -442,11 +479,6 @@ mod test {
         /// Return the specified [Symbol] on the cell at the tape head.
         pub fn read(&self) -> Symbol {
             self.tape[self.index]
-        }
-
-        /// Set the machine's [State]
-        pub fn set_state(&mut self, state: State) {
-            self.state = state;
         }
 
         pub fn index(&self) -> isize {
@@ -511,6 +543,41 @@ mod test {
             assert_eq!(tape.read(), simple_tape.read());
             assert_eq!(tape.state, simple_tape.state);
             assert_eq!(tape.index(), simple_tape.index());
+        }
+    }
+
+    #[test]
+    fn test_into_tuple() {
+        let transitions = [
+            Transition::L0A,
+            Transition::R0A,
+            Transition::L1A,
+            Transition::R1A,
+            Transition::L0B,
+            Transition::R0B,
+            Transition::L1B,
+            Transition::R1B,
+            Transition::L0C,
+            Transition::R0C,
+            Transition::L1C,
+            Transition::R1C,
+            Transition::L0D,
+            Transition::R0D,
+            Transition::L1D,
+            Transition::R1D,
+            Transition::L0E,
+            Transition::R0E,
+            Transition::L1E,
+            Transition::R1E,
+            Transition::L0Z,
+            Transition::R0Z,
+            Transition::L1Z,
+            Transition::R1Z,
+        ];
+        for transition in transitions {
+            assert_eq!(transition.into_tuple(), transition.into_tuple_2());
+            let (symbol, direction, state) = transition.into_tuple();
+            assert_eq!(Transition::from_tuple(symbol, direction, state), transition);
         }
     }
 }
