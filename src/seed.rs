@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Condvar, Mutex,
+use std::{
+    str::FromStr,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Condvar, Mutex,
+    },
 };
 
 use crossbeam::queue::SegQueue;
@@ -131,7 +134,7 @@ impl ExplorerNode {
         //         set of unique transitions (described below), we duplicate the machine
         //         and replace the empty transition with a filled transition. These new machines are
         //         added to the list of undecided machines and the original is removed.
-        let four_states_or_less = visited_states(&self.table) < 5;
+        let four_states_or_less = self.table.visited_states() < 5;
         let halt_reason = if four_states_or_less {
             self.run(Some(BUSY_BEAVER_FOUR_STEPS), Some(SPACE_LIMIT))
         } else {
@@ -258,7 +261,7 @@ pub struct Explorer {
 
 impl Explorer {
     pub fn new(num_threads: usize) -> Explorer {
-        let table = Table::parse(STARTING_MACHINE).unwrap();
+        let table = Table::from_str(STARTING_MACHINE).unwrap();
         let machine = ExplorerNode::new(table);
 
         let machines_to_check = SegQueue::new();
@@ -423,11 +426,11 @@ fn get_child_tables_for_transition(
 /// Returns the target states that an undefined transition can opt to visit. This is the set of
 /// already visited states in the Table plus the lowest unvisited state.
 fn get_target_states(table: &Table) -> Vec<State> {
-    let is_last_transition = defined_transitions(table) == 10 - 1;
+    let is_last_transition = table.defined_transitions() == 10 - 1;
     if is_last_transition {
         vec![State::Halt]
     } else {
-        match visited_states(table) {
+        match table.visited_states() {
             // Technically not reachable, but included for completeness
             0 => vec![State::A],
             1 => vec![State::A, State::B],
@@ -440,39 +443,10 @@ fn get_target_states(table: &Table) -> Vec<State> {
     }
 }
 
-/// Returns the number of states which are visited in this table. This will give how many
-/// states were visited since we only define a state transition as a machien is about to
-/// visit it.
-fn visited_states(table: &Table) -> usize {
-    let a_visited = table.state_a_0.is_some() || table.state_a_1.is_some();
-    let b_visited = table.state_b_0.is_some() || table.state_b_1.is_some();
-    let c_visited = table.state_c_0.is_some() || table.state_c_1.is_some();
-    let d_visited = table.state_d_0.is_some() || table.state_d_1.is_some();
-    let e_visited = table.state_e_0.is_some() || table.state_e_1.is_some();
-
-    a_visited as usize
-        + b_visited as usize
-        + c_visited as usize
-        + d_visited as usize
-        + e_visited as usize
-}
-
-/// Returns the number of transitions which are defined on the table.
-fn defined_transitions(table: &Table) -> usize {
-    table.state_a_0.is_some() as usize
-        + table.state_a_1.is_some() as usize
-        + table.state_b_0.is_some() as usize
-        + table.state_b_1.is_some() as usize
-        + table.state_c_0.is_some() as usize
-        + table.state_c_1.is_some() as usize
-        + table.state_d_0.is_some() as usize
-        + table.state_d_1.is_some() as usize
-        + table.state_e_0.is_some() as usize
-        + table.state_e_1.is_some() as usize
-}
-
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use crate::{
         seed::{
             ExplorerNode, HaltReason, MachineDecision, BB5_SPACE, BB5_STEPS, SPACE_LIMIT,
@@ -484,12 +458,12 @@ mod test {
     use super::{get_child_tables_for_transition, Explorer, BB5_CHAMPION, STARTING_MACHINE};
 
     fn assert_contains(tables: &[Table], table: &str) {
-        assert!(tables.contains(&Table::parse(table).unwrap()))
+        assert!(tables.contains(&Table::from_str(table).unwrap()))
     }
 
     #[test]
     fn test_bb_champion() {
-        let table = Table::parse(BB5_CHAMPION).unwrap();
+        let table = Table::from_str(BB5_CHAMPION).unwrap();
 
         let explorer_state = &mut ExplorerNode::new(table);
         let halt_reason = explorer_state.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
@@ -512,7 +486,7 @@ mod test {
 
     #[test]
     fn test_get_child_tables_1() {
-        let table = Table::parse(STARTING_MACHINE).unwrap();
+        let table = Table::from_str(STARTING_MACHINE).unwrap();
         let tables: Vec<Table> =
             get_child_tables_for_transition(table, State::B, Symbol::One).collect();
 
@@ -528,7 +502,7 @@ mod test {
 
     #[test]
     fn test_get_child_tables_2() {
-        let table = Table::parse("1RB1LC_1RC1RB_1RD0LE_1LA1LD_---0LA").unwrap();
+        let table = Table::from_str("1RB1LC_1RC1RB_1RD0LE_1LA1LD_---0LA").unwrap();
         let tables: Vec<Table> =
             get_child_tables_for_transition(table, State::E, Symbol::Zero).collect();
 
@@ -540,7 +514,7 @@ mod test {
 
     #[test]
     fn test_time_limit() {
-        let table = Table::parse("1RB0LC_0LA0LD_1LA---_0RE0RD_0LD---").unwrap();
+        let table = Table::from_str("1RB0LC_0LA0LD_1LA---_0RE0RD_0LD---").unwrap();
         let mut node = ExplorerNode::new(table);
         let reason = node.run(Some(TIME_LIMIT), None);
         assert_eq!(reason, HaltReason::ExceededStepLimit);
@@ -550,7 +524,7 @@ mod test {
 
     #[test]
     fn test_space_limit_right() {
-        let table = Table::parse("1RA1RA_------_------_------_------").unwrap();
+        let table = Table::from_str("1RA1RA_------_------_------_------").unwrap();
         let mut node = ExplorerNode::new(table);
         let reason = node.run(None, Some(SPACE_LIMIT));
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);
@@ -561,7 +535,7 @@ mod test {
 
     #[test]
     fn test_space_limit_left() {
-        let table = Table::parse("1LA1LA_------_------_------_------").unwrap();
+        let table = Table::from_str("1LA1LA_------_------_------_------").unwrap();
         let mut node = ExplorerNode::new(table);
         let reason = node.run(None, Some(SPACE_LIMIT));
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);

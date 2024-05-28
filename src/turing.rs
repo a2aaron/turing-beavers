@@ -1,11 +1,12 @@
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 use crate::seed::SPACE_LIMIT;
 
 /// The two symbols which can be written to the tape (zeros, or ones)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Symbol {
-    Zero,
+    Zero = 0,
     One,
 }
 
@@ -37,13 +38,14 @@ impl Display for Direction {
 /// The current state of the turing machine. Note that "Halt" is not considered to be a part of
 /// the normal states (any machine transitioning to Halt instantly Halts)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum State {
-    A,
-    B,
-    C,
-    D,
-    E,
-    Halt,
+    A = 0,
+    B = 1,
+    C = 2,
+    D = 3,
+    E = 4,
+    Halt = 5,
 }
 
 impl Display for State {
@@ -188,7 +190,7 @@ impl Transition {
 }
 
 pub type Action = Option<Transition>;
-
+pub type Table = Table2;
 /// The transition table. Note that this is written to allow for ease with enumerating transition
 /// tables. An [Action] which is None is used to represent that a particular transition is unusued or
 /// unreachable (and hence could be replaced by any Transition without affecting the behavior of the
@@ -199,20 +201,20 @@ pub type Action = Option<Transition>;
 /// is for. For example, `state_d_1` is the transition rule for when the Turing machine reads a
 /// [Symbol::One] in [State::D]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Table {
-    pub state_a_0: Action,
-    pub state_a_1: Action,
-    pub state_b_0: Action,
-    pub state_b_1: Action,
-    pub state_c_0: Action,
-    pub state_c_1: Action,
-    pub state_d_0: Action,
-    pub state_d_1: Action,
-    pub state_e_0: Action,
-    pub state_e_1: Action,
+pub struct Table1 {
+    state_a_0: Action,
+    state_a_1: Action,
+    state_b_0: Action,
+    state_b_1: Action,
+    state_c_0: Action,
+    state_c_1: Action,
+    state_d_0: Action,
+    state_d_1: Action,
+    state_e_0: Action,
+    state_e_1: Action,
 }
 
-impl Table {
+impl Table1 {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {
         match (state, symbol) {
             (State::A, Symbol::Zero) => self.state_a_0,
@@ -245,6 +247,40 @@ impl Table {
         }
     }
 
+    /// Returns the number of transitions which are defined on the table.
+    pub fn defined_transitions(&self) -> usize {
+        self.state_a_0.is_some() as usize
+            + self.state_a_1.is_some() as usize
+            + self.state_b_0.is_some() as usize
+            + self.state_b_1.is_some() as usize
+            + self.state_c_0.is_some() as usize
+            + self.state_c_1.is_some() as usize
+            + self.state_d_0.is_some() as usize
+            + self.state_d_1.is_some() as usize
+            + self.state_e_0.is_some() as usize
+            + self.state_e_1.is_some() as usize
+    }
+
+    /// Returns the number of states which are visited in this table. This will give how many
+    /// states were visited since we only define a state transition as a machien is about to
+    /// visit it.
+    pub fn visited_states(&self) -> usize {
+        let a_visited = self.state_a_0.is_some() || self.state_a_1.is_some();
+        let b_visited = self.state_b_0.is_some() || self.state_b_1.is_some();
+        let c_visited = self.state_c_0.is_some() || self.state_c_1.is_some();
+        let d_visited = self.state_d_0.is_some() || self.state_d_1.is_some();
+        let e_visited = self.state_e_0.is_some() || self.state_e_1.is_some();
+
+        a_visited as usize
+            + b_visited as usize
+            + c_visited as usize
+            + d_visited as usize
+            + e_visited as usize
+    }
+}
+
+impl FromStr for Table1 {
+    type Err = ();
     /// Parse a Turing machine string in the following format:
     /// `AAAaaa-BBBbbb-CCCccc-DDDddd-EEEeee`
     /// Each triple of letters correspond to an transition. For instance, "aaa" is the [Action]
@@ -254,7 +290,7 @@ impl Table {
     /// - Second character: L or R, representing the [Direction] for the tape head to move
     /// - Third character: A, B, C, D, E, or Z, representing the [State] for the machine to
     /// transition to. "Z" is assumed to be [State::Halt].
-    pub fn parse(str: &str) -> Result<Table, ()> {
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
         fn parse_action(action: &str) -> Result<Action, ()> {
             if action.len() != 3 {
                 return Err(());
@@ -314,7 +350,7 @@ impl Table {
             let (state_d_0, state_d_1) = parse_group(groups[3])?;
             let (state_e_0, state_e_1) = parse_group(groups[4])?;
 
-            Ok(Table {
+            Ok(Table1 {
                 state_a_0,
                 state_a_1,
                 state_b_0,
@@ -330,7 +366,7 @@ impl Table {
     }
 }
 
-impl Display for Table {
+impl Display for Table1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fn display_action(action: &Action) -> String {
             if let Some(action) = action {
@@ -340,6 +376,7 @@ impl Display for Table {
                 "---".to_string()
             }
         }
+
         write!(
             f,
             "{}{}_{}{}_{}{}_{}{}_{}{}",
@@ -354,6 +391,100 @@ impl Display for Table {
             display_action(&self.state_e_0),
             display_action(&self.state_e_1),
         )
+    }
+}
+
+impl From<Table2> for Table1 {
+    fn from(table: Table2) -> Self {
+        Table1 {
+            state_a_0: table.0[0],
+            state_a_1: table.0[1],
+            state_b_0: table.0[2],
+            state_b_1: table.0[3],
+            state_c_0: table.0[4],
+            state_c_1: table.0[5],
+            state_d_0: table.0[6],
+            state_d_1: table.0[7],
+            state_e_0: table.0[8],
+            state_e_1: table.0[9],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Table2([Action; 10]);
+impl Table2 {
+    pub fn get(&self, state: State, symbol: Symbol) -> Action {
+        let index = (state as usize) * 2 + symbol as usize;
+        self.0[index]
+    }
+
+    pub fn get_mut(&mut self, state: State, symbol: Symbol) -> &mut Action {
+        let index = (state as usize) * 2 + symbol as usize;
+        &mut self.0[index]
+    }
+
+    /// Returns the number of transitions which are defined on the table.
+    pub fn defined_transitions(&self) -> usize {
+        self.0[0].is_some() as usize
+            + self.0[1].is_some() as usize
+            + self.0[2].is_some() as usize
+            + self.0[3].is_some() as usize
+            + self.0[4].is_some() as usize
+            + self.0[5].is_some() as usize
+            + self.0[6].is_some() as usize
+            + self.0[7].is_some() as usize
+            + self.0[8].is_some() as usize
+            + self.0[9].is_some() as usize
+    }
+
+    /// Returns the number of states which are visited in this table. This will give how many
+    /// states were visited since we only define a state transition as a machien is about to
+    /// visit it.
+    pub fn visited_states(&self) -> usize {
+        let table = self.0;
+        let a_visited = table[0].is_some() || table[1].is_some();
+        let b_visited = table[2].is_some() || table[3].is_some();
+        let c_visited = table[4].is_some() || table[5].is_some();
+        let d_visited = table[6].is_some() || table[7].is_some();
+        let e_visited = table[8].is_some() || table[9].is_some();
+
+        a_visited as usize
+            + b_visited as usize
+            + c_visited as usize
+            + d_visited as usize
+            + e_visited as usize
+    }
+}
+
+impl From<Table1> for Table2 {
+    fn from(table: Table1) -> Self {
+        Table2([
+            table.state_a_0,
+            table.state_a_1,
+            table.state_b_0,
+            table.state_b_1,
+            table.state_c_0,
+            table.state_c_1,
+            table.state_d_0,
+            table.state_d_1,
+            table.state_e_0,
+            table.state_e_1,
+        ])
+    }
+}
+
+impl FromStr for Table2 {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Table2::from(Table1::from_str(s)?))
+    }
+}
+
+impl Display for Table2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Table1::fmt(&Table1::from(*self), f)
     }
 }
 
@@ -439,12 +570,14 @@ impl Tape {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use crate::{
         seed::SPACE_LIMIT,
-        turing::{Direction, Symbol, Tape},
+        turing::{Direction, Symbol, Table2, Tape},
     };
 
-    use super::{State, Transition, TAPE_LOGICAL_LENGTH};
+    use super::{State, Table1, Transition, TAPE_LOGICAL_LENGTH};
 
     pub struct SimpleTape {
         tape: [Symbol; TAPE_LOGICAL_LENGTH],
@@ -583,5 +716,41 @@ mod test {
                 transition
             );
         }
+    }
+
+    #[test]
+    fn test_table() {
+        let s = "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA";
+        let table = Table1::from_str(s).unwrap();
+        let table2 = Table2::from_str(s).unwrap();
+
+        assert_eq!(table, Table1::from(table2));
+        assert_eq!(Table2::from(table), table2);
+
+        let state_symbols = [
+            (State::A, Symbol::Zero),
+            (State::A, Symbol::One),
+            (State::B, Symbol::Zero),
+            (State::B, Symbol::One),
+            (State::C, Symbol::Zero),
+            (State::C, Symbol::One),
+            (State::D, Symbol::Zero),
+            (State::D, Symbol::One),
+            (State::E, Symbol::Zero),
+            (State::E, Symbol::One),
+        ];
+        for (state, symbol) in state_symbols {
+            assert_eq!(table.get(state, symbol), table2.get(state, symbol))
+        }
+    }
+
+    #[test]
+    fn test_table_2() {
+        let s = "1RB---_1RC1RB_---0LE_1LA1LD_------";
+        let table = Table1::from_str(s).unwrap();
+        let table2 = Table2::from_str(s).unwrap();
+
+        assert_eq!(table.visited_states(), table2.visited_states());
+        assert_eq!(table.defined_transitions(), table2.defined_transitions());
     }
 }
