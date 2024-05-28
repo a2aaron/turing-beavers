@@ -548,36 +548,40 @@ mod test {
 
     #[test]
     fn test_into_tuple() {
+        #[rustfmt::skip]
         let transitions = [
-            Transition::L0A,
-            Transition::R0A,
-            Transition::L1A,
-            Transition::R1A,
-            Transition::L0B,
-            Transition::R0B,
-            Transition::L1B,
-            Transition::R1B,
-            Transition::L0C,
-            Transition::R0C,
-            Transition::L1C,
-            Transition::R1C,
-            Transition::L0D,
-            Transition::R0D,
-            Transition::L1D,
-            Transition::R1D,
-            Transition::L0E,
-            Transition::R0E,
-            Transition::L1E,
-            Transition::R1E,
-            Transition::L0Z,
-            Transition::R0Z,
-            Transition::L1Z,
-            Transition::R1Z,
+            (Transition::L0A, (Symbol::Zero, Direction::Left, State::A)),
+            (Transition::R0A, (Symbol::Zero, Direction::Right, State::A)),
+            (Transition::L1A, (Symbol::One, Direction::Left, State::A)),
+            (Transition::R1A, (Symbol::One, Direction::Right, State::A)),
+            (Transition::L0B, (Symbol::Zero, Direction::Left, State::B)),
+            (Transition::R0B, (Symbol::Zero, Direction::Right, State::B)),
+            (Transition::L1B, (Symbol::One, Direction::Left, State::B)),
+            (Transition::R1B, (Symbol::One, Direction::Right, State::B)),
+            (Transition::L0C, (Symbol::Zero, Direction::Left, State::C)),
+            (Transition::R0C, (Symbol::Zero, Direction::Right, State::C)),
+            (Transition::L1C, (Symbol::One, Direction::Left, State::C)),
+            (Transition::R1C, (Symbol::One, Direction::Right, State::C)),
+            (Transition::L0D, (Symbol::Zero, Direction::Left, State::D)),
+            (Transition::R0D, (Symbol::Zero, Direction::Right, State::D)),
+            (Transition::L1D, (Symbol::One, Direction::Left, State::D)),
+            (Transition::R1D, (Symbol::One, Direction::Right, State::D)),
+            (Transition::L0E, (Symbol::Zero, Direction::Left, State::E)),
+            (Transition::R0E, (Symbol::Zero, Direction::Right, State::E)),
+            (Transition::L1E, (Symbol::One, Direction::Left, State::E)),
+            (Transition::R1E, (Symbol::One, Direction::Right, State::E)),
+            (Transition::L0Z, (Symbol::Zero, Direction::Left, State::Halt)),
+            (Transition::R0Z, (Symbol::Zero, Direction::Right, State::Halt)),
+            (Transition::L1Z, (Symbol::One, Direction::Left, State::Halt)),
+            (Transition::R1Z, (Symbol::One, Direction::Right, State::Halt)),
         ];
-        for transition in transitions {
-            assert_eq!(transition.into_tuple(), transition.into_tuple_2());
-            let (symbol, direction, state) = transition.into_tuple();
-            assert_eq!(Transition::from_tuple(symbol, direction, state), transition);
+        for (transition, tuple) in transitions {
+            assert_eq!(transition.into_tuple(), tuple);
+            assert_eq!(transition.into_tuple_2(), tuple);
+            assert_eq!(
+                Transition::from_tuple(tuple.0, tuple.1, tuple.2),
+                transition
+            );
         }
     }
 }
