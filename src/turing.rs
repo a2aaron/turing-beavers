@@ -2,6 +2,14 @@ use std::{fmt::Display, str::FromStr};
 
 use crate::seed::SPACE_LIMIT;
 
+// for choosing which implementation to use
+impl Transition {
+    pub fn into_tuple(&self) -> (Symbol, Direction, State) {
+        self.into_tuple_2()
+    }
+}
+pub type Table = Table2;
+
 /// The two symbols which can be written to the tape (zeros, or ones)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -99,7 +107,7 @@ pub enum Transition {
 }
 
 impl Transition {
-    pub fn into_tuple(&self) -> (Symbol, Direction, State) {
+    pub fn into_tuple_1(&self) -> (Symbol, Direction, State) {
         match self {
             Transition::L0A => (Symbol::Zero, Direction::Left, State::A),
             Transition::R0A => (Symbol::Zero, Direction::Right, State::A),
@@ -129,7 +137,7 @@ impl Transition {
     }
 
     // TODO: This is actually slower than the giant match??
-    pub fn into_tuple_2(&self) -> (Symbol, Direction, State) {
+    fn into_tuple_2(&self) -> (Symbol, Direction, State) {
         let value = *self as u8;
         let direction = value & 0b000_000_0_1;
         let symbol = (value & 0b000_000_1_0) >> 1;
@@ -190,7 +198,6 @@ impl Transition {
 }
 
 pub type Action = Option<Transition>;
-pub type Table = Table2;
 /// The transition table. Note that this is written to allow for ease with enumerating transition
 /// tables. An [Action] which is None is used to represent that a particular transition is unusued or
 /// unreachable (and hence could be replaced by any Transition without affecting the behavior of the
@@ -709,7 +716,7 @@ mod test {
             (Transition::R1Z, (Symbol::One, Direction::Right, State::Halt)),
         ];
         for (transition, tuple) in transitions {
-            assert_eq!(transition.into_tuple(), tuple);
+            assert_eq!(transition.into_tuple_1(), tuple);
             assert_eq!(transition.into_tuple_2(), tuple);
             assert_eq!(
                 Transition::from_tuple(tuple.0, tuple.1, tuple.2),
