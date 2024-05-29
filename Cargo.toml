@@ -7,11 +7,18 @@ edition = "2021"
 
 [dependencies]
 crossbeam = "0.8.4"
-rayon = "1.10.0"
 
 [profile.release]
 debug = true
 split-debuginfo = "packed"
+
+[profile.release2]
+inherits = "release"
+opt-level = 3
+debug = false
+split-debuginfo = "off"
+# panic = "abort" # seems to make things slower???
+lto = "thin"
 
 [dev-dependencies]
 rand = "0.8.5"
