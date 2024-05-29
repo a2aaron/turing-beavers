@@ -5,12 +5,12 @@ use crate::seed::SPACE_LIMIT;
 // for choosing which implementation to use
 impl Transition {
     pub fn into_tuple(&self) -> (Symbol, Direction, State) {
-        self.into_tuple_1()
-        // self.into_tuple_2() // seems to be slower for some reason
+        self.into_tuple_match()
+        // self.into_tuple_bitfield() // seems to be slower for some reason
     }
 }
-// pub type Table = Table1; // seems to be slower for some reason
-pub type Table = Table2;
+// pub type Table = TableStruct; // seems to be slower for some reason
+pub type Table = TableArray;
 
 /// The two symbols which can be written to the tape (zeros, or ones)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,7 +109,7 @@ pub enum Transition {
 }
 
 impl Transition {
-    pub fn into_tuple_1(&self) -> (Symbol, Direction, State) {
+    pub fn into_tuple_match(&self) -> (Symbol, Direction, State) {
         match self {
             Transition::L0A => (Symbol::Zero, Direction::Left, State::A),
             Transition::R0A => (Symbol::Zero, Direction::Right, State::A),
@@ -139,7 +139,7 @@ impl Transition {
     }
 
     // TODO: This is actually slower than the giant match??
-    fn into_tuple_2(&self) -> (Symbol, Direction, State) {
+    fn into_tuple_bitfield(&self) -> (Symbol, Direction, State) {
         let value = *self as u8;
         let direction = value & 0b000_000_0_1;
         let symbol = (value & 0b000_000_1_0) >> 1;
@@ -210,20 +210,20 @@ pub type Action = Option<Transition>;
 /// is for. For example, `state_d_1` is the transition rule for when the Turing machine reads a
 /// [Symbol::One] in [State::D]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Table1 {
-    state_a_0: Action,
-    state_a_1: Action,
-    state_b_0: Action,
-    state_b_1: Action,
-    state_c_0: Action,
-    state_c_1: Action,
-    state_d_0: Action,
-    state_d_1: Action,
-    state_e_0: Action,
-    state_e_1: Action,
+pub struct TableStruct {
+    pub state_a_0: Action,
+    pub state_a_1: Action,
+    pub state_b_0: Action,
+    pub state_b_1: Action,
+    pub state_c_0: Action,
+    pub state_c_1: Action,
+    pub state_d_0: Action,
+    pub state_d_1: Action,
+    pub state_e_0: Action,
+    pub state_e_1: Action,
 }
 
-impl Table1 {
+impl TableStruct {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {
         match (state, symbol) {
             (State::A, Symbol::Zero) => self.state_a_0,
@@ -288,7 +288,7 @@ impl Table1 {
     }
 }
 
-impl FromStr for Table1 {
+impl FromStr for TableStruct {
     type Err = ();
     /// Parse a Turing machine string in the following format:
     /// `AAAaaa-BBBbbb-CCCccc-DDDddd-EEEeee`
@@ -359,7 +359,7 @@ impl FromStr for Table1 {
             let (state_d_0, state_d_1) = parse_group(groups[3])?;
             let (state_e_0, state_e_1) = parse_group(groups[4])?;
 
-            Ok(Table1 {
+            Ok(TableStruct {
                 state_a_0,
                 state_a_1,
                 state_b_0,
@@ -375,7 +375,7 @@ impl FromStr for Table1 {
     }
 }
 
-impl Display for Table1 {
+impl Display for TableStruct {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fn display_action(action: &Action) -> String {
             if let Some(action) = action {
@@ -403,9 +403,9 @@ impl Display for Table1 {
     }
 }
 
-impl From<Table2> for Table1 {
-    fn from(table: Table2) -> Self {
-        Table1 {
+impl From<TableArray> for TableStruct {
+    fn from(table: TableArray) -> Self {
+        TableStruct {
             state_a_0: table.0[0],
             state_a_1: table.0[1],
             state_b_0: table.0[2],
@@ -421,8 +421,8 @@ impl From<Table2> for Table1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Table2([Action; 10]);
-impl Table2 {
+pub struct TableArray([Action; 10]);
+impl TableArray {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {
         let index = (state as usize) * 2 + symbol as usize;
         self.0[index]
@@ -466,9 +466,9 @@ impl Table2 {
     }
 }
 
-impl From<Table1> for Table2 {
-    fn from(table: Table1) -> Self {
-        Table2([
+impl From<TableStruct> for TableArray {
+    fn from(table: TableStruct) -> Self {
+        TableArray([
             table.state_a_0,
             table.state_a_1,
             table.state_b_0,
@@ -483,17 +483,17 @@ impl From<Table1> for Table2 {
     }
 }
 
-impl FromStr for Table2 {
+impl FromStr for TableArray {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Table2::from(Table1::from_str(s)?))
+        Ok(TableArray::from(TableStruct::from_str(s)?))
     }
 }
 
-impl Display for Table2 {
+impl Display for TableArray {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Table1::fmt(&Table1::from(*self), f)
+        TableStruct::fmt(&TableStruct::from(*self), f)
     }
 }
 
@@ -590,10 +590,10 @@ mod test {
 
     use crate::{
         seed::SPACE_LIMIT,
-        turing::{Direction, Symbol, Table2, Tape},
+        turing::{Direction, Symbol, TableArray, Tape},
     };
 
-    use super::{State, Table1, Transition, TAPE_LOGICAL_LENGTH};
+    use super::{State, TableStruct, Transition, TAPE_LOGICAL_LENGTH};
 
     pub struct SimpleTape {
         tape: [Symbol; TAPE_LOGICAL_LENGTH],
@@ -725,8 +725,8 @@ mod test {
             (Transition::R1Z, (Symbol::One, Direction::Right, State::Halt)),
         ];
         for (transition, tuple) in transitions {
-            assert_eq!(transition.into_tuple_1(), tuple);
-            assert_eq!(transition.into_tuple_2(), tuple);
+            assert_eq!(transition.into_tuple_match(), tuple);
+            assert_eq!(transition.into_tuple_bitfield(), tuple);
             assert_eq!(
                 Transition::from_tuple(tuple.0, tuple.1, tuple.2),
                 transition
@@ -737,11 +737,11 @@ mod test {
     #[test]
     fn test_table() {
         let s = "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA";
-        let table = Table1::from_str(s).unwrap();
-        let table2 = Table2::from_str(s).unwrap();
+        let table = TableStruct::from_str(s).unwrap();
+        let table2 = TableArray::from_str(s).unwrap();
 
-        assert_eq!(table, Table1::from(table2));
-        assert_eq!(Table2::from(table), table2);
+        assert_eq!(table, TableStruct::from(table2));
+        assert_eq!(TableArray::from(table), table2);
 
         let state_symbols = [
             (State::A, Symbol::Zero),
@@ -763,8 +763,8 @@ mod test {
     #[test]
     fn test_table_2() {
         let s = "1RB---_1RC1RB_---0LE_1LA1LD_------";
-        let table = Table1::from_str(s).unwrap();
-        let table2 = Table2::from_str(s).unwrap();
+        let table = TableStruct::from_str(s).unwrap();
+        let table2 = TableArray::from_str(s).unwrap();
 
         assert_eq!(table.visited_states(), table2.visited_states());
         assert_eq!(table.defined_transitions(), table2.defined_transitions());

@@ -262,6 +262,25 @@ pub struct Explorer {
 }
 
 impl Explorer {
+    pub fn with_starting_queue(num_threads: usize, tables: Vec<Table>) -> Explorer {
+        let machines_to_check = SegQueue::new();
+        for table in tables {
+            let machine = ExplorerNode::new(table);
+            machines_to_check.push(machine);
+        }
+
+        Explorer {
+            machines_to_check,
+            nonhalting: SegQueue::new(),
+            halting: SegQueue::new(),
+            undecided_step: SegQueue::new(),
+            undecided_space: SegQueue::new(),
+            total_steps: AtomicUsize::new(0),
+            total_space: AtomicUsize::new(0),
+            wait_for_work: EmptyQueueCondvar::new(num_threads),
+        }
+    }
+
     pub fn new(num_threads: usize) -> Explorer {
         let table = Table::from_str(STARTING_MACHINE).unwrap();
         let machine = ExplorerNode::new(table);
