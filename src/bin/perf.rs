@@ -23,7 +23,7 @@ fn main() {
     run(Explorer::new(1));
     let elapsed = now.elapsed().as_secs_f32();
     println!(
-        "Decided {} machines in {:.0} seconds ({:.0}/s)",
+        "Decided {} machines in {:.2} seconds ({:.0}/s)",
         NUM_MACHINES,
         elapsed,
         (NUM_MACHINES as f32 / elapsed)

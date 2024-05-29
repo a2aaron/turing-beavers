@@ -55,11 +55,13 @@ pub fn step(tape: &mut Tape, table: &Table) -> StepResult {
     let action = table.get(tape.state, tape.read());
 
     match action {
-        Some(action) => {
-            let (symbol, direction, state) = action.into_tuple();
-            tape.write(symbol);
-            tape.shift(direction);
-            tape.set_state(state);
+        Some(transition) => {
+            // let (symbol, direction, state) = transition.into_tuple();
+            // tape.write(symbol);
+            // tape.shift(direction);
+            // tape.set_state(state);
+            // for some reason packaging the above into a function produces a 10 second speedup???
+            tape.execute(transition);
             StepResult::Continue
         }
         None => StepResult::Empty,

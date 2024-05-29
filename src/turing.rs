@@ -5,9 +5,11 @@ use crate::seed::SPACE_LIMIT;
 // for choosing which implementation to use
 impl Transition {
     pub fn into_tuple(&self) -> (Symbol, Direction, State) {
-        self.into_tuple_2()
+        self.into_tuple_1()
+        // self.into_tuple_2() // seems to be slower for some reason
     }
 }
+// pub type Table = Table1; // seems to be slower for some reason
 pub type Table = Table2;
 
 /// The two symbols which can be written to the tape (zeros, or ones)
@@ -572,6 +574,13 @@ impl Tape {
 
     pub fn index(&self) -> isize {
         self.index as isize - SPACE_LIMIT as isize
+    }
+
+    pub fn execute(&mut self, transition: Transition) {
+        let (symbol, direction, state) = transition.into_tuple();
+        self.write(symbol);
+        self.shift(direction);
+        self.set_state(state);
     }
 }
 
