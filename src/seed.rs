@@ -56,11 +56,12 @@ pub fn step(tape: &mut Tape, table: &Table) -> StepResult {
 
     match action {
         Some(transition) => {
+            // Note: Packaging these four lines into a function produces significantly faster code
+            // I am unsure why
             // let (symbol, direction, state) = transition.into_tuple();
             // tape.write(symbol);
             // tape.shift(direction);
             // tape.set_state(state);
-            // for some reason packaging the above into a function produces a 10 second speedup???
             tape.execute(transition);
             StepResult::Continue
         }

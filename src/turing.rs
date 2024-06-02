@@ -6,11 +6,18 @@ use crate::seed::SPACE_LIMIT;
 impl Transition {
     pub fn into_tuple(&self) -> (Symbol, Direction, State) {
         self.into_tuple_match()
-        // self.into_tuple_bitfield() // seems to be slower for some reason
+        // self.into_tuple_bitfield() // slower
     }
 }
-// pub type Table = TableStruct; // seems to be slower for some reason
+// pub type Table = TableStruct; // slower
 pub type Table = TableArray;
+
+impl Tape {
+    pub fn execute(&mut self, transition: Transition) {
+        self.execute_naive(transition)
+        // self.execute_match(transition) // slower
+    }
+}
 
 /// The two symbols which can be written to the tape (zeros, or ones)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,6 +146,7 @@ impl Transition {
     }
 
     // TODO: This is actually slower than the giant match??
+    #[allow(dead_code)]
     fn into_tuple_bitfield(&self) -> (Symbol, Direction, State) {
         let value = *self as u8;
         let direction = value & 0b000_000_0_1;
@@ -421,6 +429,11 @@ impl From<TableArray> for TableStruct {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Stored as [A0, A1, B0, B1, C0, C1, D0, D1, E0, E1]
+/// aka, indexing into the array:
+/// 0b0000 000 0
+///        ^^^ ^ Symbol
+///         +--- State (excluding Halt)
 pub struct TableArray([Action; 10]);
 impl TableArray {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {
@@ -576,11 +589,42 @@ impl Tape {
         self.index as isize - SPACE_LIMIT as isize
     }
 
-    pub fn execute(&mut self, transition: Transition) {
+    fn execute_naive(&mut self, transition: Transition) {
         let (symbol, direction, state) = transition.into_tuple();
         self.write(symbol);
         self.shift(direction);
         self.set_state(state);
+    }
+
+    #[rustfmt::skip]
+    #[allow(dead_code)]
+    fn execute_match(&mut self, transition: Transition) {
+        match transition {
+            Transition::L0A => { self.write(Symbol::Zero); self.shift(Direction::Left);  self.set_state(State::A) },
+            Transition::L0B => { self.write(Symbol::Zero); self.shift(Direction::Left);  self.set_state(State::B) },
+            Transition::L0C => { self.write(Symbol::Zero); self.shift(Direction::Left);  self.set_state(State::C) },
+            Transition::L0D => { self.write(Symbol::Zero); self.shift(Direction::Left);  self.set_state(State::D) },
+            Transition::L0E => { self.write(Symbol::Zero); self.shift(Direction::Left);  self.set_state(State::E) },
+            Transition::L0Z => { self.write(Symbol::Zero); self.shift(Direction::Left);  self.set_state(State::Halt) },
+            Transition::L1A => { self.write(Symbol::One);  self.shift(Direction::Left);  self.set_state(State::A) },
+            Transition::L1B => { self.write(Symbol::One);  self.shift(Direction::Left);  self.set_state(State::B) },
+            Transition::L1C => { self.write(Symbol::One);  self.shift(Direction::Left);  self.set_state(State::C) },
+            Transition::L1D => { self.write(Symbol::One);  self.shift(Direction::Left);  self.set_state(State::D) },
+            Transition::L1E => { self.write(Symbol::One);  self.shift(Direction::Left);  self.set_state(State::E) },
+            Transition::L1Z => { self.write(Symbol::One);  self.shift(Direction::Left);  self.set_state(State::Halt) },
+            Transition::R0A => { self.write(Symbol::Zero); self.shift(Direction::Right); self.set_state(State::A) },
+            Transition::R0B => { self.write(Symbol::Zero); self.shift(Direction::Right); self.set_state(State::B) },
+            Transition::R0C => { self.write(Symbol::Zero); self.shift(Direction::Right); self.set_state(State::C) },
+            Transition::R0D => { self.write(Symbol::Zero); self.shift(Direction::Right); self.set_state(State::D) },
+            Transition::R0E => { self.write(Symbol::Zero); self.shift(Direction::Right); self.set_state(State::E) },
+            Transition::R0Z => { self.write(Symbol::Zero); self.shift(Direction::Right); self.set_state(State::Halt) },
+            Transition::R1A => { self.write(Symbol::One);  self.shift(Direction::Right); self.set_state(State::A) },
+            Transition::R1B => { self.write(Symbol::One);  self.shift(Direction::Right); self.set_state(State::B) },
+            Transition::R1C => { self.write(Symbol::One);  self.shift(Direction::Right); self.set_state(State::C) },
+            Transition::R1D => { self.write(Symbol::One);  self.shift(Direction::Right); self.set_state(State::D) },
+            Transition::R1E => { self.write(Symbol::One);  self.shift(Direction::Right); self.set_state(State::E) },
+            Transition::R1Z => { self.write(Symbol::One);  self.shift(Direction::Right); self.set_state(State::Halt) },
+        }
     }
 }
 
