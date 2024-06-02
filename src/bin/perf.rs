@@ -1,3 +1,4 @@
+use core::num;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
     fs::File,
@@ -17,7 +18,7 @@ struct Header {
     lexiographically_sorted: bool,
 }
 
-fn get_machines(path: impl AsRef<Path>) -> io::Result<Explorer> {
+fn get_machines(path: impl AsRef<Path>, num_machines: usize, seed: u64) -> io::Result<Explorer> {
     fn parse_transition(transition: [u8; 3]) -> io::Result<Action> {
         let (symbol, direction, state) = match transition {
             [0, 0, 0] => return Ok(None),
@@ -95,8 +96,8 @@ fn get_machines(path: impl AsRef<Path>) -> io::Result<Explorer> {
 
     let mut tables = vec![];
 
-    let thread_rng = &mut StdRng::seed_from_u64(SEED);
-    for _ in 0..NUM_MACHINES {
+    let thread_rng = &mut StdRng::seed_from_u64(seed);
+    for _ in 0..num_machines {
         let index: u64 = thread_rng.gen_range(0..header.total_undecided).into();
         bytes.seek(io::SeekFrom::Start(index * 30 + 30))?;
 
@@ -110,9 +111,9 @@ fn get_machines(path: impl AsRef<Path>) -> io::Result<Explorer> {
     Ok(Explorer::with_starting_queue(1, tables))
 }
 
-fn run(explorer: Explorer) {
+fn run(explorer: Explorer, num_machines: usize) {
     while !explorer.machines_to_check.is_empty() {
-        if explorer.stats().decided() > NUM_MACHINES {
+        if explorer.stats().decided() > num_machines {
             break;
         }
 
@@ -124,17 +125,16 @@ fn run(explorer: Explorer) {
     }
 }
 
-const NUM_MACHINES: usize = 1000; // 70_000
-const SEED: u64 = 413; // 413 is the most cryptographically secure seed. fully suitable for gambling games
-                       // (source: https://rust-random.github.io/book/guide-seeding.html#a-simple-number)
-fn main() {
-    // let explorer = Explorer::new(1);
-    println!("Epically parsing file");
-    let explorer = get_machines("undecided.bin").unwrap();
+fn random_bench() {
+    const NUM_MACHINES: usize = 1000;
+    const SEED: u64 = 413; // 413 is the most cryptographically secure seed. fully suitable for gambling games
+                           // (source: https://rust-random.github.io/book/guide-seeding.html#a-simple-number)
+
+    let explorer = get_machines("undecided.bin", NUM_MACHINES, SEED).unwrap();
     println!("Deciding {} machines", NUM_MACHINES);
 
     let now = Instant::now();
-    run(explorer);
+    run(explorer, NUM_MACHINES);
     let elapsed = now.elapsed().as_secs_f32();
     println!(
         "Decided {} machines in {:.2} seconds ({:.0}/s)",
@@ -142,4 +142,25 @@ fn main() {
         elapsed,
         (NUM_MACHINES as f32 / elapsed)
     );
+}
+
+fn early_bench() {
+    const NUM_MACHINES: usize = 70_000;
+    let explorer = Explorer::new(1);
+
+    println!("Deciding {} machines", NUM_MACHINES);
+    let now = Instant::now();
+
+    run(explorer, NUM_MACHINES);
+    let elapsed = now.elapsed().as_secs_f32();
+    println!(
+        "Decided {} machines in {:.2} seconds ({:.0}/s)",
+        NUM_MACHINES,
+        elapsed,
+        (NUM_MACHINES as f32 / elapsed)
+    );
+}
+
+fn main() {
+    early_bench();
 }

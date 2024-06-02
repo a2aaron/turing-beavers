@@ -5,3 +5,4 @@ out.txt
 *.asm
 scratchpad/
 undecided.bin
+benchmark data.numbers
