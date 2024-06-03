@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 use turing_beavers::{
-    seed::Explorer,
+    seed::ExplorerNode,
     turing::{Action, Direction, State, Symbol, Table, TableStruct, Transition},
 };
 
@@ -17,7 +17,7 @@ struct Header {
     lexiographically_sorted: bool,
 }
 
-fn get_machines(path: impl AsRef<Path>, num_machines: usize, seed: u64) -> io::Result<Explorer> {
+fn get_machines(path: impl AsRef<Path>, num_machines: usize, seed: u64) -> io::Result<Vec<Table>> {
     fn parse_transition(transition: [u8; 3]) -> io::Result<Action> {
         let (symbol, direction, state) = match transition {
             [0, 0, 0] => return Ok(None),
@@ -107,21 +107,7 @@ fn get_machines(path: impl AsRef<Path>, num_machines: usize, seed: u64) -> io::R
         tables.push(table);
     }
 
-    Ok(Explorer::with_starting_queue(1, tables))
-}
-
-fn run(explorer: Explorer, num_machines: usize) {
-    while !explorer.machines_to_check.is_empty() {
-        if explorer.stats().decided() > num_machines {
-            break;
-        }
-
-        let result = explorer.step_decide();
-        match result {
-            Some(_result) => continue,
-            None => break,
-        }
-    }
+    Ok(tables)
 }
 
 fn random_bench() {
@@ -129,11 +115,16 @@ fn random_bench() {
     const SEED: u64 = 413; // 413 is the most cryptographically secure seed. fully suitable for gambling games
                            // (source: https://rust-random.github.io/book/guide-seeding.html#a-simple-number)
 
-    let explorer = get_machines("undecided.bin", NUM_MACHINES, SEED).unwrap();
+    let tables = get_machines("undecided.bin", NUM_MACHINES, SEED).unwrap();
+    let nodes = tables.iter().map(|&table| ExplorerNode::new(table));
     println!("Deciding {} machines", NUM_MACHINES);
 
     let now = Instant::now();
-    run(explorer, NUM_MACHINES);
+
+    for mut node in nodes {
+        std::hint::black_box(node.decide());
+    }
+
     let elapsed = now.elapsed().as_secs_f32();
     println!(
         "Decided {} machines in {:.2} seconds ({:.0}/s)",

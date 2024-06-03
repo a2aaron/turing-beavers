@@ -1,12 +1,10 @@
 use std::{
+    ops::ControlFlow,
     str::FromStr,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Condvar, Mutex,
-    },
+    sync::{Condvar, Mutex},
 };
 
-use crossbeam::queue::SegQueue;
+use crossbeam::{channel::Receiver, queue::SegQueue};
 
 use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 
@@ -99,13 +97,11 @@ impl RunStats {
             max_index: 0,
         }
     }
-    fn get_delta_steps(&mut self) -> usize {
-        let delta_steps = self.steps_ran - self.prev_steps;
-        self.prev_steps = self.steps_ran;
-        delta_steps
+    pub fn get_delta_steps(&self) -> usize {
+        self.steps_ran - self.prev_steps
     }
 
-    fn space_used(&self) -> usize {
+    pub fn space_used(&self) -> usize {
         1 + (self.max_index - self.min_index) as usize
     }
 }
@@ -126,7 +122,7 @@ impl ExplorerNode {
         }
     }
 
-    pub fn decide(&mut self) -> MachineDecision {
+    pub fn decide(&mut self) -> DecidedNode {
         // We build a tree of all of the "interesting" machines using the following algorithm:
         // - Simulate a machine step-by-step. One of three things happen:
         //      1. The machine reaches the time or space limit. In this case, we mark the machine as
@@ -144,7 +140,7 @@ impl ExplorerNode {
             self.run(Some(TIME_LIMIT), Some(SPACE_LIMIT))
         };
 
-        match halt_reason {
+        let decision = match halt_reason {
             // If we exceed the step limit, but visited 4 or less states, then the machine will
             // never halt since there's no way for it break out of those 4 states (if there was,
             // this would contradict the value of BB(4), since it would mean there is a halting
@@ -160,6 +156,11 @@ impl ExplorerNode {
                 let nodes = get_child_nodes(self).collect();
                 MachineDecision::EmptyTransition(nodes)
             }
+        };
+        DecidedNode {
+            table: self.table,
+            decision,
+            stats: self.stats,
         }
     }
 
@@ -211,185 +212,88 @@ impl ExplorerNode {
 
 pub struct EmptyQueueCondvar {
     cond_var: Condvar,
-    num_running: Mutex<usize>,
-    done_forever: AtomicBool,
+    done: Mutex<bool>,
 }
 
 impl EmptyQueueCondvar {
-    fn new(num_threads: usize) -> EmptyQueueCondvar {
+    fn new() -> EmptyQueueCondvar {
         EmptyQueueCondvar {
             cond_var: Condvar::new(),
-            num_running: Mutex::new(num_threads),
-            done_forever: AtomicBool::new(false),
+            done: Mutex::new(false),
         }
     }
-
-    pub fn wait(&self) {
-        let mut guard = self.num_running.lock().unwrap();
-        *guard -= 1;
-
-        // If there are no workers running, then no one can add work to wake up everyone
-        // (so wake everyone up so they can exit--they only went to sleep in order to wait on more work)
-        if *guard == 0 {
-            // This needs to be acquire, since
-            self.done_forever.store(true, Ordering::Release);
-            self.cond_var.notify_all();
-        } else {
-            // Otherwise, let the worker wait until there's more work to be done
-            let mut guard = self.cond_var.wait(guard).unwrap();
-            *guard += 1;
+    /// Wait until work is ready in the Explorer. If this method returns ControlFlow::Break, then
+    /// the worker thread should exit, as there is no more work to be done (this occurs if a graceful
+    /// shutdown has been initiated)
+    pub fn wait(&self) -> ControlFlow<(), ()> {
+        let done = self.done.lock().unwrap();
+        if *done {
+            return ControlFlow::Break(());
         }
+
+        let done = self.cond_var.wait(done).unwrap();
+        if *done {
+            return ControlFlow::Break(());
+        }
+
+        ControlFlow::Continue(())
     }
 
     // Wake up all worker threads due to there being work in the queue again
     // This will probably only happen at the start, where there is only 1 machine in the queue to
-    // start with (or maybe also later, i haven't actually run
-    // this program to completion ever).
+    // start with (or maybe also later, i haven't actually run this program to completion ever).
     pub fn notify_work_ready(&self) {
+        // println!("work is ready");
+        self.cond_var.notify_all();
+    }
+
+    /// Notify that all workers should shut down (and should exit instead of trying to do more work
+    /// or waiting for more work)
+    pub fn notify_shutdown(&self) {
+        let mut done = self.done.lock().unwrap();
+        *done = true;
         self.cond_var.notify_all();
     }
 }
 
-pub struct Explorer {
-    pub machines_to_check: SegQueue<ExplorerNode>,
-    pub nonhalting: SegQueue<Table>,
-    pub halting: SegQueue<Table>,
-    pub undecided_step: SegQueue<Table>,
-    pub undecided_space: SegQueue<Table>,
-    pub total_steps: AtomicUsize,
-    pub total_space: AtomicUsize,
+pub struct DecidedNode {
+    pub table: Table,
+    pub decision: MachineDecision,
+    pub stats: RunStats,
+}
 
-    pub wait_for_work: EmptyQueueCondvar,
+#[derive(Clone)]
+pub struct Explorer {
+    pub machines_to_check: crossbeam::channel::Receiver<ExplorerNode>,
 }
 
 impl Explorer {
-    pub fn with_starting_queue(num_threads: usize, tables: Vec<Table>) -> Explorer {
-        let machines_to_check = SegQueue::new();
+    pub fn with_starting_queue(
+        tables: Vec<Table>,
+    ) -> (Explorer, crossbeam::channel::Sender<ExplorerNode>) {
+        let (send, machines_to_check) = crossbeam::channel::unbounded();
         for table in tables {
             let machine = ExplorerNode::new(table);
-            machines_to_check.push(machine);
+            send.send(machine).unwrap();
         }
 
-        Explorer {
-            machines_to_check,
-            nonhalting: SegQueue::new(),
-            halting: SegQueue::new(),
-            undecided_step: SegQueue::new(),
-            undecided_space: SegQueue::new(),
-            total_steps: AtomicUsize::new(0),
-            total_space: AtomicUsize::new(0),
-            wait_for_work: EmptyQueueCondvar::new(num_threads),
-        }
+        let explorer = Explorer { machines_to_check };
+
+        (explorer, send)
     }
 
-    pub fn new(num_threads: usize) -> Explorer {
+    pub fn new() -> (Explorer, crossbeam::channel::Sender<ExplorerNode>) {
         let table = Table::from_str(STARTING_MACHINE).unwrap();
-        let machine = ExplorerNode::new(table);
+        Explorer::with_starting_queue(vec![table])
+    }
 
-        let machines_to_check = SegQueue::new();
-        machines_to_check.push(machine);
-        Explorer {
-            machines_to_check,
-            nonhalting: SegQueue::new(),
-            halting: SegQueue::new(),
-            undecided_step: SegQueue::new(),
-            undecided_space: SegQueue::new(),
-            total_steps: AtomicUsize::new(0),
-            total_space: AtomicUsize::new(0),
-            wait_for_work: EmptyQueueCondvar::new(num_threads),
+    pub fn add_work(sender: &crossbeam::channel::Sender<ExplorerNode>, nodes: Vec<ExplorerNode>) {
+        for node in nodes {
+            // This unwrap is safe because the worker threads will always have an open receiver
+            // (until the sender is dropped)
+            sender.send(node).unwrap();
         }
     }
-
-    pub fn step_decide(&self) -> Option<ExplorerStepInfo> {
-        if let Some(mut node) = self.machines_to_check.pop() {
-            let decision = node.decide();
-
-            match decision.clone() {
-                MachineDecision::Halting => self.halting.push(node.table),
-                MachineDecision::NonHalting => self.nonhalting.push(node.table),
-                MachineDecision::UndecidedStepLimit => self.undecided_step.push(node.table),
-                MachineDecision::UndecidedSpaceLimit => self.undecided_space.push(node.table),
-                MachineDecision::EmptyTransition(nodes) => {
-                    for node in nodes {
-                        self.machines_to_check.push(node)
-                    }
-                    self.wait_for_work.notify_work_ready();
-                }
-            }
-
-            match decision {
-                MachineDecision::EmptyTransition(_) => (),
-                _ => {
-                    self.total_steps
-                        .fetch_add(node.stats.get_delta_steps(), Ordering::Relaxed);
-                    self.total_space
-                        .fetch_add(node.stats.space_used(), Ordering::Relaxed);
-                }
-            }
-
-            Some(ExplorerStepInfo { node, decision })
-        } else {
-            None
-        }
-    }
-
-    pub fn stats(&self) -> Stats {
-        Stats {
-            remaining: self.machines_to_check.len(),
-            halt: self.halting.len(),
-            nonhalt: self.nonhalting.len(),
-            undecided_step: self.undecided_step.len(),
-            undecided_space: self.undecided_space.len(),
-        }
-    }
-
-    pub fn done(&self) -> bool {
-        self.wait_for_work.done_forever.load(Ordering::Acquire)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Stats {
-    pub remaining: usize,
-    pub halt: usize,
-    pub nonhalt: usize,
-    pub undecided_step: usize,
-    pub undecided_space: usize,
-}
-
-impl Stats {
-    pub fn new() -> Stats {
-        Stats {
-            remaining: 0,
-            halt: 0,
-            nonhalt: 0,
-            undecided_step: 0,
-            undecided_space: 0,
-        }
-    }
-
-    pub fn decided(&self) -> usize {
-        self.halt + self.nonhalt + self.undecided_space + self.undecided_step
-    }
-}
-
-impl std::ops::Sub for Stats {
-    type Output = Stats;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self {
-            remaining: self.remaining - rhs.remaining,
-            halt: self.halt - rhs.halt,
-            nonhalt: self.nonhalt - rhs.nonhalt,
-            undecided_step: self.undecided_step - rhs.undecided_step,
-            undecided_space: self.undecided_space - rhs.undecided_space,
-        }
-    }
-}
-
-pub struct ExplorerStepInfo {
-    pub node: ExplorerNode,
-    pub decision: MachineDecision,
 }
 
 #[derive(Debug, Clone)]
@@ -410,6 +314,7 @@ fn get_child_nodes(node: &ExplorerNode) -> impl Iterator<Item = ExplorerNode> {
         // Using new seems to make this much slower??
         let mut new_node = node.clone();
         new_node.table = table;
+        new_node.stats.prev_steps = new_node.stats.steps_ran;
         new_node
     })
 }
@@ -497,9 +402,9 @@ mod test {
 
     #[test]
     fn test_explorer() {
-        let explorer = Explorer::new(1);
-
-        let result = explorer.step_decide().unwrap();
+        let (explorer, _send) = Explorer::new();
+        let mut node = explorer.machines_to_check.recv().unwrap();
+        let result = node.decide();
         assert!(matches!(
             result.decision,
             MachineDecision::EmptyTransition(_)
