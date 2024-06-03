@@ -3,7 +3,9 @@
 use std::time::Instant;
 
 use crossbeam::channel::{Receiver, Sender};
-use turing_beavers::seed::{DecidedNode, Explorer, ExplorerNode, MachineDecision};
+use turing_beavers::seed::{
+    add_work_to_queue, new_queue, DecidedNode, MachineDecision, UndecidedNode,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct Stats {
@@ -67,7 +69,7 @@ impl Stats {
 
 fn run_manager(
     config: Config,
-    send_undecided: Sender<ExplorerNode>,
+    send_undecided: Sender<UndecidedNode>,
     recv_decided: Receiver<DecidedNode>,
 ) {
     let mut stats = Stats::new();
@@ -76,7 +78,7 @@ fn run_manager(
 
     while let Ok(node) = recv_decided.recv() {
         match node.decision {
-            MachineDecision::EmptyTransition(nodes) => Explorer::add_work(&send_undecided, nodes),
+            MachineDecision::EmptyTransition(nodes) => add_work_to_queue(&send_undecided, nodes),
             MachineDecision::Halting => stats.halt += 1,
             MachineDecision::NonHalting => stats.nonhalt += 1,
             MachineDecision::UndecidedStepLimit => stats.undecided_step += 1,
@@ -101,7 +103,7 @@ fn run_manager(
 fn run_decider_worker(
     thread_id: usize,
     send_decided: Sender<DecidedNode>,
-    recv_undecided: Receiver<ExplorerNode>,
+    recv_undecided: Receiver<UndecidedNode>,
 ) {
     while let Ok(mut node) = recv_undecided.recv() {
         let result = node.decide();
@@ -146,14 +148,14 @@ fn main() {
     let config = Config::new(Some(5));
 
     let (send_decided, recv_decided) = crossbeam::channel::unbounded();
-    let (explorer, send_undecided) = Explorer::new();
+    let (recv_undecided, send_undecided) = new_queue();
 
     std::thread::spawn(|| run_manager(config, send_undecided, recv_decided));
 
     let mut workers = vec![];
     for i in 0..num_threads {
         let send_decided = send_decided.clone();
-        let recv_undecided = explorer.clone();
+        let recv_undecided = recv_undecided.clone();
         workers.push(std::thread::spawn(move || {
             run_decider_worker(i, send_decided, recv_undecided)
         }));

@@ -1,13 +1,13 @@
 use std::time::Instant;
-use turing_beavers::seed::{Explorer, MachineDecision};
+use turing_beavers::seed::{add_work_to_queue, new_queue, MachineDecision};
 
 fn run(num_machines: usize) {
-    let (recv, send) = Explorer::new();
+    let (recv, send) = new_queue();
     let mut num_decided = 0;
     while num_decided < num_machines {
         let result = std::hint::black_box(recv.recv().unwrap().decide());
         match result.decision {
-            MachineDecision::EmptyTransition(nodes) => Explorer::add_work(&send, nodes),
+            MachineDecision::EmptyTransition(nodes) => add_work_to_queue(&send, nodes),
             _ => num_decided += 1,
         }
     }

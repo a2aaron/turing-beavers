@@ -103,15 +103,15 @@ impl RunStats {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExplorerNode {
+pub struct UndecidedNode {
     pub table: Table,
     pub tape: Tape,
     pub stats: RunStats,
 }
 
-impl ExplorerNode {
-    pub fn new(table: Table) -> ExplorerNode {
-        ExplorerNode {
+impl UndecidedNode {
+    pub fn new(table: Table) -> UndecidedNode {
+        UndecidedNode {
             table,
             tape: Tape::new(),
             stats: RunStats::new(),
@@ -212,32 +212,25 @@ pub struct DecidedNode {
     pub stats: RunStats,
 }
 
-#[derive(Clone)]
-pub struct Explorer;
-
-impl Explorer {
-    pub fn with_starting_queue(
-        tables: Vec<Table>,
-    ) -> (Receiver<ExplorerNode>, Sender<ExplorerNode>) {
-        let (send, recv) = crossbeam::channel::unbounded();
-        for table in tables {
-            let machine = ExplorerNode::new(table);
-            send.send(machine).unwrap();
-        }
-        (recv, send)
+pub fn with_starting_queue(tables: Vec<Table>) -> (Receiver<UndecidedNode>, Sender<UndecidedNode>) {
+    let (send, recv) = crossbeam::channel::unbounded();
+    for table in tables {
+        let machine = UndecidedNode::new(table);
+        send.send(machine).unwrap();
     }
+    (recv, send)
+}
 
-    pub fn new() -> (Receiver<ExplorerNode>, Sender<ExplorerNode>) {
-        let table = Table::from_str(STARTING_MACHINE).unwrap();
-        Explorer::with_starting_queue(vec![table])
-    }
+pub fn new_queue() -> (Receiver<UndecidedNode>, Sender<UndecidedNode>) {
+    let table = Table::from_str(STARTING_MACHINE).unwrap();
+    with_starting_queue(vec![table])
+}
 
-    pub fn add_work(sender: &Sender<ExplorerNode>, nodes: Vec<ExplorerNode>) {
-        for node in nodes {
-            // This unwrap is safe because the worker threads will always have an open receiver
-            // (until the sender is dropped)
-            sender.send(node).unwrap();
-        }
+pub fn add_work_to_queue(sender: &Sender<UndecidedNode>, nodes: Vec<UndecidedNode>) {
+    for node in nodes {
+        // This unwrap is safe because the worker threads will always have an open receiver
+        // (until the sender is dropped)
+        sender.send(node).unwrap();
     }
 }
 
@@ -247,10 +240,10 @@ pub enum MachineDecision {
     NonHalting,
     UndecidedStepLimit,
     UndecidedSpaceLimit,
-    EmptyTransition(Vec<ExplorerNode>),
+    EmptyTransition(Vec<UndecidedNode>),
 }
 
-fn get_child_nodes(node: &ExplorerNode) -> impl Iterator<Item = ExplorerNode> {
+fn get_child_nodes(node: &UndecidedNode) -> impl Iterator<Item = UndecidedNode> {
     let children = get_child_tables_for_transition(node.table, node.tape.state, node.tape.read());
 
     let node = node.clone();
@@ -321,13 +314,13 @@ mod test {
 
     use crate::{
         seed::{
-            ExplorerNode, HaltReason, MachineDecision, BB5_SPACE, BB5_STEPS, SPACE_LIMIT,
-            TIME_LIMIT,
+            new_queue, HaltReason, MachineDecision, UndecidedNode, BB5_SPACE, BB5_STEPS,
+            SPACE_LIMIT, TIME_LIMIT,
         },
         turing::{State, Symbol, Table},
     };
 
-    use super::{get_child_tables_for_transition, Explorer, BB5_CHAMPION, STARTING_MACHINE};
+    use super::{get_child_tables_for_transition, BB5_CHAMPION, STARTING_MACHINE};
 
     fn assert_contains(tables: &[Table], table: &str) {
         assert!(tables.contains(&Table::from_str(table).unwrap()))
@@ -337,17 +330,17 @@ mod test {
     fn test_bb_champion() {
         let table = Table::from_str(BB5_CHAMPION).unwrap();
 
-        let explorer_state = &mut ExplorerNode::new(table);
-        let halt_reason = explorer_state.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
+        let node = &mut UndecidedNode::new(table);
+        let halt_reason = node.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
 
         assert_eq!(halt_reason, HaltReason::HaltState);
-        assert_eq!(explorer_state.stats.steps_ran, BB5_STEPS);
-        assert_eq!(explorer_state.stats.space_used(), BB5_SPACE);
+        assert_eq!(node.stats.steps_ran, BB5_STEPS);
+        assert_eq!(node.stats.space_used(), BB5_SPACE);
     }
 
     #[test]
-    fn test_explorer() {
-        let (recv, _send) = Explorer::new();
+    fn test_decide() {
+        let (recv, _send) = new_queue();
         let mut node = recv.recv().unwrap();
         let result = node.decide();
         assert!(matches!(
@@ -387,7 +380,7 @@ mod test {
     #[test]
     fn test_time_limit() {
         let table = Table::from_str("1RB0LC_0LA0LD_1LA---_0RE0RD_0LD---").unwrap();
-        let mut node = ExplorerNode::new(table);
+        let mut node = UndecidedNode::new(table);
         let reason = node.run(Some(TIME_LIMIT), None);
         assert_eq!(reason, HaltReason::ExceededStepLimit);
         // runs for one less step than actual for probably silly reasons.
@@ -397,7 +390,7 @@ mod test {
     #[test]
     fn test_space_limit_right() {
         let table = Table::from_str("1RA1RA_------_------_------_------").unwrap();
-        let mut node = ExplorerNode::new(table);
+        let mut node = UndecidedNode::new(table);
         let reason = node.run(None, Some(SPACE_LIMIT));
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);
         // runs for one less step than actual for probably silly reasons.
@@ -408,7 +401,7 @@ mod test {
     #[test]
     fn test_space_limit_left() {
         let table = Table::from_str("1LA1LA_------_------_------_------").unwrap();
-        let mut node = ExplorerNode::new(table);
+        let mut node = UndecidedNode::new(table);
         let reason = node.run(None, Some(SPACE_LIMIT));
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);
         // runs for one less step than actual for probably silly reasons.

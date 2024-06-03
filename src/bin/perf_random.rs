@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 use turing_beavers::{
-    seed::ExplorerNode,
+    seed::UndecidedNode,
     turing::{Action, Direction, State, Symbol, Table, TableStruct, Transition},
 };
 
@@ -116,7 +116,7 @@ fn random_bench() {
                            // (source: https://rust-random.github.io/book/guide-seeding.html#a-simple-number)
 
     let tables = get_machines("undecided.bin", NUM_MACHINES, SEED).unwrap();
-    let nodes = tables.iter().map(|&table| ExplorerNode::new(table));
+    let nodes = tables.iter().map(|&table| UndecidedNode::new(table));
     println!("Deciding {} machines", NUM_MACHINES);
 
     let now = Instant::now();
