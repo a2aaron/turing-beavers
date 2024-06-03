@@ -1,10 +1,6 @@
-use std::{
-    ops::ControlFlow,
-    str::FromStr,
-    sync::{Condvar, Mutex},
-};
+use std::str::FromStr;
 
-use crossbeam::{channel::Receiver, queue::SegQueue};
+use crossbeam::channel::{Receiver, Sender};
 
 use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 
@@ -210,52 +206,6 @@ impl ExplorerNode {
     }
 }
 
-pub struct EmptyQueueCondvar {
-    cond_var: Condvar,
-    done: Mutex<bool>,
-}
-
-impl EmptyQueueCondvar {
-    fn new() -> EmptyQueueCondvar {
-        EmptyQueueCondvar {
-            cond_var: Condvar::new(),
-            done: Mutex::new(false),
-        }
-    }
-    /// Wait until work is ready in the Explorer. If this method returns ControlFlow::Break, then
-    /// the worker thread should exit, as there is no more work to be done (this occurs if a graceful
-    /// shutdown has been initiated)
-    pub fn wait(&self) -> ControlFlow<(), ()> {
-        let done = self.done.lock().unwrap();
-        if *done {
-            return ControlFlow::Break(());
-        }
-
-        let done = self.cond_var.wait(done).unwrap();
-        if *done {
-            return ControlFlow::Break(());
-        }
-
-        ControlFlow::Continue(())
-    }
-
-    // Wake up all worker threads due to there being work in the queue again
-    // This will probably only happen at the start, where there is only 1 machine in the queue to
-    // start with (or maybe also later, i haven't actually run this program to completion ever).
-    pub fn notify_work_ready(&self) {
-        // println!("work is ready");
-        self.cond_var.notify_all();
-    }
-
-    /// Notify that all workers should shut down (and should exit instead of trying to do more work
-    /// or waiting for more work)
-    pub fn notify_shutdown(&self) {
-        let mut done = self.done.lock().unwrap();
-        *done = true;
-        self.cond_var.notify_all();
-    }
-}
-
 pub struct DecidedNode {
     pub table: Table,
     pub decision: MachineDecision,
@@ -263,31 +213,26 @@ pub struct DecidedNode {
 }
 
 #[derive(Clone)]
-pub struct Explorer {
-    pub machines_to_check: crossbeam::channel::Receiver<ExplorerNode>,
-}
+pub struct Explorer;
 
 impl Explorer {
     pub fn with_starting_queue(
         tables: Vec<Table>,
-    ) -> (Explorer, crossbeam::channel::Sender<ExplorerNode>) {
-        let (send, machines_to_check) = crossbeam::channel::unbounded();
+    ) -> (Receiver<ExplorerNode>, Sender<ExplorerNode>) {
+        let (send, recv) = crossbeam::channel::unbounded();
         for table in tables {
             let machine = ExplorerNode::new(table);
             send.send(machine).unwrap();
         }
-
-        let explorer = Explorer { machines_to_check };
-
-        (explorer, send)
+        (recv, send)
     }
 
-    pub fn new() -> (Explorer, crossbeam::channel::Sender<ExplorerNode>) {
+    pub fn new() -> (Receiver<ExplorerNode>, Sender<ExplorerNode>) {
         let table = Table::from_str(STARTING_MACHINE).unwrap();
         Explorer::with_starting_queue(vec![table])
     }
 
-    pub fn add_work(sender: &crossbeam::channel::Sender<ExplorerNode>, nodes: Vec<ExplorerNode>) {
+    pub fn add_work(sender: &Sender<ExplorerNode>, nodes: Vec<ExplorerNode>) {
         for node in nodes {
             // This unwrap is safe because the worker threads will always have an open receiver
             // (until the sender is dropped)
@@ -402,8 +347,8 @@ mod test {
 
     #[test]
     fn test_explorer() {
-        let (explorer, _send) = Explorer::new();
-        let mut node = explorer.machines_to_check.recv().unwrap();
+        let (recv, _send) = Explorer::new();
+        let mut node = recv.recv().unwrap();
         let result = node.decide();
         assert!(matches!(
             result.decision,

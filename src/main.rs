@@ -98,8 +98,12 @@ fn run_manager(
     }
 }
 
-fn run_decider_worker(thread_id: usize, send_decided: Sender<DecidedNode>, explorer: Explorer) {
-    while let Ok(mut node) = explorer.machines_to_check.recv() {
+fn run_decider_worker(
+    thread_id: usize,
+    send_decided: Sender<DecidedNode>,
+    recv_undecided: Receiver<ExplorerNode>,
+) {
+    while let Ok(mut node) = recv_undecided.recv() {
         let result = node.decide();
         match send_decided.send(result) {
             Ok(()) => continue,
@@ -149,9 +153,9 @@ fn main() {
     let mut workers = vec![];
     for i in 0..num_threads {
         let send_decided = send_decided.clone();
-        let explorer = explorer.clone();
+        let recv_undecided = explorer.clone();
         workers.push(std::thread::spawn(move || {
-            run_decider_worker(i, send_decided, explorer)
+            run_decider_worker(i, send_decided, recv_undecided)
         }));
     }
 

@@ -2,10 +2,10 @@ use std::time::Instant;
 use turing_beavers::seed::{Explorer, MachineDecision};
 
 fn run(num_machines: usize) {
-    let (explorer, send) = Explorer::new();
+    let (recv, send) = Explorer::new();
     let mut num_decided = 0;
     while num_decided < num_machines {
-        let result = std::hint::black_box(explorer.machines_to_check.recv().unwrap().decide());
+        let result = std::hint::black_box(recv.recv().unwrap().decide());
         match result.decision {
             MachineDecision::EmptyTransition(nodes) => Explorer::add_work(&send, nodes),
             _ => num_decided += 1,
