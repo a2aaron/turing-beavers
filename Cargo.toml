@@ -9,6 +9,8 @@ default-run = "turing-beavers"
 [dependencies]
 crossbeam = "0.8.4"
 rand = "0.8.5"
+smol = "2.0.0"
+sqlx = { version = "0.7.4", features = ["sqlite"] }
 
 [profile.release]
 debug = true

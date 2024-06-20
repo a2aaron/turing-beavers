@@ -6,3 +6,5 @@ out.txt
 scratchpad/
 undecided.bin
 benchmark data.numbers
+*.db
+*.sqlite
