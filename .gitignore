@@ -8,3 +8,5 @@ undecided.bin
 benchmark data.numbers
 *.db
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal

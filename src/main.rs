@@ -9,7 +9,10 @@ use sqlx::{
     ConnectOptions, SqliteConnection,
 };
 use turing_beavers::{
-    seed::{add_work_to_queue, new_queue, DecidedNode, MachineDecision, UndecidedNode},
+    seed::{
+        add_work_to_queue, with_starting_queue, DecidedNode, MachineDecision, UndecidedNode,
+        STARTING_MACHINE,
+    },
     turing::Table,
 };
 
@@ -19,6 +22,8 @@ struct Stats {
     total_steps: usize,
     total_space: usize,
     unprocessed: usize,
+    processed: usize,
+    empty: usize,
     remaining: usize,
     halt: usize,
     nonhalt: usize,
@@ -31,6 +36,7 @@ impl Stats {
         Stats {
             start: Instant::now(),
             remaining: 0,
+            empty: 0,
             halt: 0,
             nonhalt: 0,
             undecided_step: 0,
@@ -38,6 +44,7 @@ impl Stats {
             total_steps: 0,
             total_space: 0,
             unprocessed: 0,
+            processed: 0,
         }
     }
 
@@ -51,68 +58,36 @@ impl Stats {
         let rate = decided as f32 / total_elapsed;
         let total_step_rate = self.total_steps as f32 / total_elapsed;
 
-        let status = format!("remain: {: >6} | unproc: {: >5} | halt: {: >4} | nonhalt: {: >4} | undec step: {: >4} | undec space: {: >4}",
+        let status = format!("remain: {: >6} | proc: {: >4} | unproc: {: >3} | empty: {: >2} | halt: {: >2} | nonhalt: {: >3} | undec step: {: >3} | undec space: {: >3}",
             self.remaining,
+            self.processed - prev.processed,
             self.unprocessed,
+            self.empty - prev.empty,
             self.halt - prev.halt,
             self.nonhalt - prev.nonhalt,
             self.undecided_step - prev.undecided_step,
             self.undecided_space - prev.undecided_space,
         );
 
-        println!(
-            "{} | steps/s: {this_step_rate: >9.0} (decided {} in {:.1}s, total {:} at {:.0}/s, {:.0} steps/s)",
-            status,
+        let delta_processed = self.processed - prev.processed;
+        let processed_rate = delta_processed as f32 / this_elapsed;
+
+        let rate_status = format!(
+            "steps/s: {this_step_rate: >9.0} | decided {} in {:.1}s, total {:} at {:.0}/s, {:.0} steps/s | processed {} in {:.1}s ({:}/s)",
             self.decided() - prev.decided(),
             this_elapsed,
             decided,
             rate,
             total_step_rate,
-        );
+            delta_processed,
+            this_elapsed,
+            processed_rate,
+            );
+        println!("{} {}", status, rate_status);
     }
 
     fn decided(&self) -> usize {
         self.halt + self.nonhalt + self.undecided_space + self.undecided_step
-    }
-}
-
-struct TableResults {
-    results: Vec<ResultRow>,
-    last_submit_time: Instant,
-}
-
-impl TableResults {
-    fn new() -> TableResults {
-        TableResults {
-            results: Vec::with_capacity(1024),
-            last_submit_time: Instant::now(),
-        }
-    }
-
-    fn push(&mut self, node: &DecidedNode) {
-        let row = ResultRow::from(node.table, &node.decision);
-        self.results.push(row)
-    }
-
-    fn len(&self) -> usize {
-        self.results.len()
-    }
-
-    fn should_submit(&self) -> bool {
-        self.len() >= 1 || self.last_submit_time.elapsed().as_secs() > 5
-    }
-
-    async fn submit(&mut self, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
-        for result in self.results.drain(..) {
-            let _result = insert_row(conn, result).await;
-        }
-        self.clear();
-        Ok(())
-    }
-
-    fn clear(&mut self) {
-        self.last_submit_time = Instant::now();
-        self.results.clear();
     }
 }
 
@@ -122,30 +97,22 @@ fn run_manager(
     send_undecided: Sender<UndecidedNode>,
     recv_decided: Receiver<DecidedNode>,
 ) {
-    let mut results = TableResults::new();
     let mut stats = Stats::new();
     let mut prev_stats = Stats::new();
     let mut last_printed_at = Instant::now();
 
     while let Ok(node) = recv_decided.recv() {
+        let submitted = block_on(submit_result(&mut db_connection, &node)).unwrap();
+        stats.processed += submitted;
         match node.decision {
-            MachineDecision::EmptyTransition(nodes) => add_work_to_queue(&send_undecided, nodes),
-            MachineDecision::Halting => {
-                results.push(&node);
-                stats.halt += 1
+            MachineDecision::EmptyTransition(nodes) => {
+                add_work_to_queue(&send_undecided, nodes);
+                stats.empty += 1
             }
-            MachineDecision::NonHalting => {
-                results.push(&node);
-                stats.nonhalt += 1
-            }
-            MachineDecision::UndecidedStepLimit => {
-                results.push(&node);
-                stats.undecided_step += 1
-            }
-            MachineDecision::UndecidedSpaceLimit => {
-                results.push(&node);
-                stats.undecided_space += 1
-            }
+            MachineDecision::Halting => stats.halt += 1,
+            MachineDecision::NonHalting => stats.nonhalt += 1,
+            MachineDecision::UndecidedStepLimit => stats.undecided_step += 1,
+            MachineDecision::UndecidedSpaceLimit => stats.undecided_space += 1,
         }
         stats.unprocessed = recv_decided.len();
         stats.remaining = send_undecided.len();
@@ -156,20 +123,6 @@ fn run_manager(
             stats.print(prev_stats, last_printed_at.elapsed().as_secs_f32());
             prev_stats = stats;
             last_printed_at = Instant::now();
-        }
-
-        if results.should_submit() {
-            // let len = results.len();
-            // let now = Instant::now();
-            // println!("Submitting batch of size {}", len);
-            block_on(results.submit(&mut db_connection)).unwrap();
-            // let time = now.elapsed().as_secs_f32();
-            // println!(
-            //     "Submitted batch of size {} in {} seconds ({}/s)",
-            //     len,
-            //     time,
-            //     len as f32 / time
-            // )
         }
 
         if config.should_exit() {
@@ -222,44 +175,57 @@ impl Config {
     }
 }
 
-async fn get_connection() -> SqliteConnection {
-    SqliteConnectOptions::from_str("/Users/aaron/dev/Rust/turing-beavers/results.sqlite")
-        .unwrap()
-        .create_if_missing(true)
-        .connect()
-        .await
-        .unwrap()
-}
+async fn submit_result(
+    conn: &mut SqliteConnection,
+    node: &DecidedNode,
+) -> Result<usize, sqlx::Error> {
+    let table = node.table;
+    let decision = &node.decision;
 
-struct ResultRow {
-    machine: String,
-    decision: Option<String>,
-}
-
-impl ResultRow {
-    fn from(table: Table, decision: &MachineDecision) -> ResultRow {
-        let decision = match decision {
-            MachineDecision::Halting => Some("Halting".to_string()),
-            MachineDecision::NonHalting => Some("Non-Halting".to_string()),
-            MachineDecision::UndecidedStepLimit => Some("Undecided (Step)".to_string()),
-            MachineDecision::UndecidedSpaceLimit => Some("Undecided (Space)".to_string()),
-            MachineDecision::EmptyTransition(_) => None,
-        };
-        ResultRow {
-            machine: table.to_string(),
-            decision,
+    let mut rows_processed = 1;
+    let _result = update_row(conn, table, decision).await;
+    match decision {
+        MachineDecision::EmptyTransition(new_nodes) => {
+            rows_processed += new_nodes.len();
+            for node in new_nodes {
+                let _result = insert_row(conn, node.table).await;
+            }
         }
+        _ => (),
     }
+
+    Ok(rows_processed)
 }
 
-async fn insert_row(conn: &mut SqliteConnection, row: ResultRow) -> SqliteQueryResult {
-    let insert = sqlx::query(
-        "INSERT INTO results (machine, decision) VALUES($1, $2) ON CONFLICT DO NOTHING",
-    )
-    .bind(row.machine)
-    .bind(row.decision)
-    .execute(conn);
-    insert.await.unwrap()
+async fn insert_row(conn: &mut SqliteConnection, table: Table) -> SqliteQueryResult {
+    let query = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
+        .bind(table.to_string())
+        .execute(conn);
+    let result = query.await.unwrap();
+    assert_eq!(result.rows_affected(), 1);
+    result
+}
+
+async fn update_row(
+    conn: &mut SqliteConnection,
+    table: Table,
+    decision: &MachineDecision,
+) -> SqliteQueryResult {
+    let decision = match decision {
+        MachineDecision::Halting => "Halting".to_string(),
+        MachineDecision::NonHalting => "Non-Halting".to_string(),
+        MachineDecision::UndecidedStepLimit => "Undecided (Step)".to_string(),
+        MachineDecision::UndecidedSpaceLimit => "Undecided (Space)".to_string(),
+        MachineDecision::EmptyTransition(_) => "Empty Transition".to_string(),
+    };
+
+    let query = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
+        .bind(table.to_string())
+        .bind(decision)
+        .execute(conn);
+    let result = query.await.unwrap();
+    assert_eq!(result.rows_affected(), 1);
+    result
 }
 
 async fn create_tables(conn: &mut SqliteConnection) -> SqliteQueryResult {
@@ -272,17 +238,62 @@ async fn create_tables(conn: &mut SqliteConnection) -> SqliteQueryResult {
     .execute(conn);
     query.await.unwrap()
 }
+
+async fn insert_initial_row(conn: &mut SqliteConnection) -> SqliteQueryResult {
+    let starting_table = Table::from_str(STARTING_MACHINE).unwrap();
+    let query = sqlx::query("INSERT OR IGNORE INTO results (machine, decision) VALUES($1, NULL)")
+        .bind(starting_table.to_string())
+        .execute(conn);
+    query.await.unwrap()
+}
+
+async fn get_queue(conn: &mut SqliteConnection) -> Vec<Table> {
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT machine FROM results WHERE decision IS NULL")
+            .fetch_all(conn)
+            .await
+            .unwrap();
+
+    tables
+        .into_iter()
+        .map(|t| Table::from_str(&t).unwrap())
+        .collect()
+}
+
+async fn run_command(conn: &mut SqliteConnection, sql: &str) -> SqliteQueryResult {
+    let query = sqlx::query(sql).execute(conn);
+    query.await.unwrap()
+}
+
+async fn get_connection() -> SqliteConnection {
+    SqliteConnectOptions::from_str("/Users/aaron/dev/Rust/turing-beavers/results.sqlite")
+        .unwrap()
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap()
+}
+
 fn main() {
-    let num_threads = 1;
+    let num_threads = 10;
     let config = Config::new(Some(300));
 
-    let (send_decided, recv_decided) = crossbeam::channel::unbounded();
-    let (recv_undecided, send_undecided) = new_queue();
+    let mut conn: SqliteConnection = block_on(get_connection());
+    let _result = block_on(create_tables(&mut conn));
+    // PRAGMAs set here are from https://phiresky.github.io/blog/2020/sqlite-performance-tuning/
+    // This is to allow faster writes to the database.
+    let _result = block_on(run_command(&mut conn, "PRAGMA synchronous = normal"));
+    let _result = block_on(run_command(&mut conn, "PRAGMA journal_mode = WAL;"));
 
-    let mut db_connection: SqliteConnection = block_on(get_connection());
-    let result = block_on(create_tables(&mut db_connection));
-    println!("{:?}", result);
-    std::thread::spawn(|| run_manager(config, db_connection, send_undecided, recv_decided));
+    // set up initial queue
+    let _result = block_on(insert_initial_row(&mut conn));
+    let (send_decided, recv_decided) = crossbeam::channel::unbounded();
+
+    let starting_queue = block_on(get_queue(&mut conn));
+    println!("Starting queue size: {}", starting_queue.len());
+    let (recv_undecided, send_undecided) = with_starting_queue(starting_queue);
+
+    std::thread::spawn(|| run_manager(config, conn, send_undecided, recv_decided));
 
     let mut workers = vec![];
     for i in 0..num_threads {
