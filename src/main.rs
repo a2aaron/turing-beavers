@@ -169,7 +169,6 @@ fn run_stats_printer(
         select! {
             recv(recv_processor) -> msg => if let Ok(processor_stats) = msg { stats.processor.add(processor_stats) },
             recv(recv_worker) -> msg => if let Ok(worker_stats) = msg{ stats.worker.add(worker_stats) },
-            default => (),
         };
 
         if last_printed_at.elapsed().as_secs() >= 1 {
