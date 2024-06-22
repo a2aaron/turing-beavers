@@ -2,7 +2,7 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
         Arc,
     },
     thread::{self, JoinHandle},
@@ -177,6 +177,7 @@ fn run_stats_printer(
 
 fn run_processor(
     mut conn: SqliteConnection,
+    state: Arc<SharedThreadState>,
     send_stats: Sender<ProcessorStats>,
     send_undecided: Sender<UndecidedNode>,
     recv_decided: Receiver<DecidedNode>,
@@ -209,6 +210,14 @@ fn run_processor(
                 remaining,
             })
             .unwrap();
+
+        if state.should_processor_force_exit() {
+            println!(
+                "Processor -- Abandoning {} unprocessed results in queue",
+                unprocessed
+            );
+            break;
+        }
     }
     println!(
         "Processor -- exiting with {} queued machines written to database",
@@ -237,7 +246,7 @@ fn run_decider_worker(
             }
         }
 
-        if state.should_exit() {
+        if state.should_workers_exit() {
             println!("Worker {} exiting -- graceful shutdown", thread_id);
             return;
         }
@@ -245,18 +254,24 @@ fn run_decider_worker(
 }
 
 struct SharedThreadState {
-    manually_shutdown: AtomicBool,
+    manually_shutdown: AtomicU8,
 }
 
 impl SharedThreadState {
     fn new() -> SharedThreadState {
         SharedThreadState {
-            manually_shutdown: AtomicBool::from(false),
+            manually_shutdown: AtomicU8::from(0),
         }
     }
 
-    fn should_exit(&self) -> bool {
-        self.manually_shutdown.load(Ordering::Relaxed)
+    fn should_workers_exit(&self) -> bool {
+        let state = self.manually_shutdown.load(Ordering::Relaxed);
+        state > 0
+    }
+
+    fn should_processor_force_exit(&self) -> bool {
+        let state = self.manually_shutdown.load(Ordering::Relaxed);
+        state > 1
     }
 }
 
@@ -278,8 +293,7 @@ fn init_connection(file: &str) -> (SqliteConnection, Vec<TableArray>) {
 
 fn install_ctrlc_handler(state: Arc<SharedThreadState>) {
     ctrlc::set_handler(move || {
-        println!("Control-C caught! Shutting down gracefully");
-        state.manually_shutdown.store(true, Ordering::Relaxed);
+        state.manually_shutdown.fetch_add(1, Ordering::Relaxed);
     })
     .expect("Could not set Ctrl-C handler");
 }
@@ -298,7 +312,18 @@ fn start_threads(
 
     let processor = thread::Builder::new()
         .name("processor".to_string())
-        .spawn(|| run_processor(conn, send_stats_processor, send_undecided, recv_decided))
+        .spawn({
+            let state = state.clone();
+            move || {
+                run_processor(
+                    conn,
+                    state.clone(),
+                    send_stats_processor,
+                    send_undecided,
+                    recv_decided,
+                )
+            }
+        })
         .unwrap();
 
     let mut workers = vec![];
