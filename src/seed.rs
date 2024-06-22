@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::{Receiver, SendError, Sender};
 
 use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
 
@@ -230,12 +230,14 @@ pub fn new_queue() -> (Receiver<UndecidedNode>, Sender<UndecidedNode>) {
     with_starting_queue(vec![table])
 }
 
-pub fn add_work_to_queue(sender: &Sender<UndecidedNode>, nodes: Vec<UndecidedNode>) {
+pub fn add_work_to_queue(
+    sender: &Sender<UndecidedNode>,
+    nodes: Vec<UndecidedNode>,
+) -> Result<(), SendError<UndecidedNode>> {
     for node in nodes {
-        // This unwrap is safe because the worker threads will always have an open receiver
-        // (until the sender is dropped)
-        sender.send(node).unwrap();
+        sender.send(node)?;
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

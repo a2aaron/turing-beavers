@@ -1,6 +1,12 @@
 #![feature(let_chains)]
 
-use std::time::Instant;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 
 use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
@@ -89,7 +95,6 @@ impl Stats {
 }
 
 fn run_manager(
-    config: Config,
     mut db_connection: SqliteConnection,
     send_undecided: Sender<UndecidedNode>,
     recv_decided: Receiver<DecidedNode>,
@@ -98,12 +103,16 @@ fn run_manager(
     let mut prev_stats = Stats::new();
     let mut last_printed_at = Instant::now();
 
+    let mut sender_closed = false;
     while let Ok(node) = recv_decided.recv() {
         let submitted = block_on(submit_result(&mut db_connection, &node)).unwrap();
         stats.processed += submitted;
         match node.decision {
             MachineDecision::EmptyTransition(nodes) => {
-                add_work_to_queue(&send_undecided, nodes);
+                if !sender_closed && let Err(_) = add_work_to_queue(&send_undecided, nodes) {
+                    println!("Manager -- send_undecided closed, no longer adding work to undecided queue");
+                    sender_closed = true;
+                };
                 stats.empty += 1
             }
             MachineDecision::Halting => stats.halt += 1,
@@ -121,38 +130,40 @@ fn run_manager(
             prev_stats = stats;
             last_printed_at = Instant::now();
         }
-
-        if config.should_exit() {
-            println!("Manager exiting -- configured timeout expired");
-            break;
-        }
     }
+    println!(
+        "Manager -- exiting with {} queued machines written to database",
+        block_on(get_queue(&mut db_connection)).len()
+    )
 }
 
 fn run_decider_worker(
     thread_id: usize,
+    config: Arc<Config>,
     send_decided: Sender<DecidedNode>,
     recv_undecided: Receiver<UndecidedNode>,
 ) {
     while let Ok(mut node) = recv_undecided.recv() {
         let result = node.decide();
         match send_decided.send(result) {
-            Ok(()) => continue,
+            Ok(()) => (),
             Err(_) => {
                 println!("Worker {} exiting -- send_decided was closed", thread_id);
                 return;
             }
         }
+
+        if config.should_exit() {
+            println!("Worker {} exiting -- graceful shutdown", thread_id);
+            return;
+        }
     }
-    println!(
-        "Worker {} exiting -- machines_to_check was closed",
-        thread_id
-    );
 }
 
 struct Config {
     max_run_time: Option<u64>,
     now: Instant,
+    manually_shutdown: AtomicBool,
 }
 
 impl Config {
@@ -160,15 +171,17 @@ impl Config {
         Config {
             max_run_time,
             now: Instant::now(),
+            manually_shutdown: AtomicBool::from(false),
         }
     }
 
     fn should_exit(&self) -> bool {
-        if let Some(max_run_time) = self.max_run_time {
+        let exceeded_runtime = if let Some(max_run_time) = self.max_run_time {
             self.now.elapsed().as_secs() > max_run_time
         } else {
             false
-        }
+        };
+        exceeded_runtime || self.manually_shutdown.load(Ordering::Relaxed)
     }
 }
 
@@ -188,30 +201,52 @@ fn init_connection(file: &str) -> (SqliteConnection, Vec<TableArray>) {
     (conn, starting_queue)
 }
 
-fn main() {
-    let num_threads = 10;
-    let config = Config::new(None);
+fn install_ctrlc_handler(config: Arc<Config>) {
+    ctrlc::set_handler(move || {
+        println!("Control-C caught! Shutting down gracefully");
+        config.manually_shutdown.store(true, Ordering::Relaxed);
+    })
+    .expect("Could not set Ctrl-C handler");
+}
 
-    let (conn, starting_queue) =
-        init_connection("/Users/aaron/dev/Rust/turing-beavers/results.sqlite");
-    println!("Starting queue size: {}", starting_queue.len());
-
+fn start_threads(
+    starting_queue: Vec<TableArray>,
+    conn: SqliteConnection,
+    num_threads: usize,
+    config: Arc<Config>,
+) -> (
+    std::thread::JoinHandle<()>,
+    Vec<std::thread::JoinHandle<()>>,
+) {
     let (send_decided, recv_decided) = crossbeam::channel::unbounded();
-
     let (recv_undecided, send_undecided) = with_starting_queue(starting_queue);
-
-    std::thread::spawn(|| run_manager(config, conn, send_undecided, recv_decided));
+    let manager = std::thread::spawn(|| run_manager(conn, send_undecided, recv_decided));
 
     let mut workers = vec![];
     for i in 0..num_threads {
         let send_decided = send_decided.clone();
         let recv_undecided = recv_undecided.clone();
+        let config = config.clone();
         workers.push(std::thread::spawn(move || {
-            run_decider_worker(i, send_decided, recv_undecided)
+            run_decider_worker(i, config, send_decided, recv_undecided)
         }));
     }
+    (manager, workers)
+}
+
+fn main() {
+    let num_threads = 10;
+    let config = Arc::new(Config::new(None));
+
+    let (conn, starting_queue) =
+        init_connection("/Users/aaron/dev/Rust/turing-beavers/results.sqlite");
+    println!("Starting queue size: {}", starting_queue.len());
+
+    install_ctrlc_handler(config.clone());
+    let (manager, workers) = start_threads(starting_queue, conn, num_threads, config);
 
     for thread in workers {
         thread.join().unwrap()
     }
+    manager.join().unwrap();
 }
