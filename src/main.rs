@@ -58,7 +58,7 @@ impl Stats {
         let rate = decided as f32 / total_elapsed;
         let total_step_rate = self.total_steps as f32 / total_elapsed;
 
-        let status = format!("remain: {: >6} | proc: {: >4} | unproc: {: >3} | empty: {: >2} | halt: {: >2} | nonhalt: {: >3} | undec step: {: >3} | undec space: {: >3}",
+        let status = format!("remain: {: >6} | proc: {: >5} | unproc: {: >4} | empty: {: >3} | halt: {: >2} | nonhalt: {: >4} | undec step: {: >3} | undec space: {: >3}",
             self.remaining,
             self.processed - prev.processed,
             self.unprocessed,
@@ -179,16 +179,15 @@ async fn submit_result(
     conn: &mut SqliteConnection,
     node: &DecidedNode,
 ) -> Result<usize, sqlx::Error> {
-    let table = node.table;
     let decision = &node.decision;
 
     let mut rows_processed = 1;
-    let _result = update_row(conn, table, decision).await;
+    update_row(conn, node).await;
     match decision {
         MachineDecision::EmptyTransition(new_nodes) => {
             rows_processed += new_nodes.len();
             for node in new_nodes {
-                let _result = insert_row(conn, node.table).await;
+                insert_row(conn, node.table).await;
             }
         }
         _ => (),
@@ -197,54 +196,82 @@ async fn submit_result(
     Ok(rows_processed)
 }
 
-async fn insert_row(conn: &mut SqliteConnection, table: Table) -> SqliteQueryResult {
+async fn insert_row(conn: &mut SqliteConnection, table: Table) {
     let query = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
         .bind(table.to_string())
         .execute(conn);
     let result = query.await.unwrap();
     assert_eq!(result.rows_affected(), 1);
-    result
 }
 
-async fn update_row(
-    conn: &mut SqliteConnection,
-    table: Table,
-    decision: &MachineDecision,
-) -> SqliteQueryResult {
-    let decision = match decision {
+async fn update_row(conn: &mut SqliteConnection, node: &DecidedNode) {
+    let decision = match node.decision {
         MachineDecision::Halting => "Halting".to_string(),
         MachineDecision::NonHalting => "Non-Halting".to_string(),
         MachineDecision::UndecidedStepLimit => "Undecided (Step)".to_string(),
         MachineDecision::UndecidedSpaceLimit => "Undecided (Space)".to_string(),
         MachineDecision::EmptyTransition(_) => "Empty Transition".to_string(),
     };
+    let table = node.table.to_string();
 
-    let query = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
-        .bind(table.to_string())
+    // Update decision row
+    let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
+        .bind(table.clone())
         .bind(decision)
-        .execute(conn);
-    let result = query.await.unwrap();
+        .execute(&mut *conn)
+        .await
+        .unwrap();
     assert_eq!(result.rows_affected(), 1);
-    result
+
+    // Insert stats--first grab the id
+    let id: i64 = sqlx::query_scalar("SELECT id FROM results WHERE machine = $1")
+        .bind(table)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+
+    // Now actually insert the stats
+    let result = sqlx::query("INSERT INTO stats (id, steps, space) VALUES($1, $2, $3)")
+        .bind(id)
+        .bind(node.stats.get_total_steps() as i64)
+        .bind(node.stats.space_used() as i64)
+        .execute(conn)
+        .await
+        .unwrap();
+    assert_eq!(result.rows_affected(), 1);
 }
 
-async fn create_tables(conn: &mut SqliteConnection) -> SqliteQueryResult {
-    let query = sqlx::query(
+async fn create_tables(conn: &mut SqliteConnection) {
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS results (
-        id       INTEGER PRIMARY KEY NOT NULL,
-        machine  TEXT    UNIQUE      NOT NULL,
-        decision TEXT              NULL)",
+        id       INTEGER NOT NULL PRIMARY KEY,
+        machine  TEXT    NOT NULL UNIQUE,
+        decision TEXT        NULL)",
     )
-    .execute(conn);
-    query.await.unwrap()
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS stats (
+            id    INTEGER NOT NULL REFERENCES results(id),
+            steps INTEGER NOT NULL,
+            space INTEGER NOT NULL)",
+    )
+    .execute(conn)
+    .await
+    .unwrap();
 }
 
-async fn insert_initial_row(conn: &mut SqliteConnection) -> SqliteQueryResult {
+async fn insert_initial_row(conn: &mut SqliteConnection) {
+    // Try to insert the initial row. OR IGNORE is used here to not do the insert if we have already
+    // decided the row.
     let starting_table = Table::from_str(STARTING_MACHINE).unwrap();
-    let query = sqlx::query("INSERT OR IGNORE INTO results (machine, decision) VALUES($1, NULL)")
+    sqlx::query("INSERT OR IGNORE INTO results (machine, decision) VALUES($1, NULL)")
         .bind(starting_table.to_string())
-        .execute(conn);
-    query.await.unwrap()
+        .execute(conn)
+        .await
+        .unwrap();
 }
 
 async fn get_queue(conn: &mut SqliteConnection) -> Vec<Table> {
@@ -261,8 +288,7 @@ async fn get_queue(conn: &mut SqliteConnection) -> Vec<Table> {
 }
 
 async fn run_command(conn: &mut SqliteConnection, sql: &str) -> SqliteQueryResult {
-    let query = sqlx::query(sql).execute(conn);
-    query.await.unwrap()
+    sqlx::query(sql).execute(conn).await.unwrap()
 }
 
 async fn get_connection() -> SqliteConnection {
@@ -276,17 +302,19 @@ async fn get_connection() -> SqliteConnection {
 
 fn main() {
     let num_threads = 10;
-    let config = Config::new(Some(300));
+    let config = Config::new(None);
 
     let mut conn: SqliteConnection = block_on(get_connection());
-    let _result = block_on(create_tables(&mut conn));
+    block_on(create_tables(&mut conn));
+
     // PRAGMAs set here are from https://phiresky.github.io/blog/2020/sqlite-performance-tuning/
     // This is to allow faster writes to the database.
-    let _result = block_on(run_command(&mut conn, "PRAGMA synchronous = normal"));
-    let _result = block_on(run_command(&mut conn, "PRAGMA journal_mode = WAL;"));
+    block_on(run_command(&mut conn, "PRAGMA synchronous = normal"));
+    block_on(run_command(&mut conn, "PRAGMA journal_mode = WAL;"));
 
     // set up initial queue
-    let _result = block_on(insert_initial_row(&mut conn));
+    block_on(insert_initial_row(&mut conn));
+
     let (send_decided, recv_decided) = crossbeam::channel::unbounded();
 
     let starting_queue = block_on(get_queue(&mut conn));

@@ -100,6 +100,10 @@ impl RunStats {
     pub fn space_used(&self) -> usize {
         1 + (self.max_index - self.min_index) as usize
     }
+
+    pub fn get_total_steps(&self) -> usize {
+        self.steps_ran
+    }
 }
 
 #[derive(Debug, Clone)]
