@@ -5,14 +5,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::JoinHandle,
-    time::Instant,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
-use crossbeam::{
-    channel::{Receiver, Sender},
-    select,
-};
+use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
 use sqlx::SqliteConnection;
 use turing_beavers::{
@@ -166,16 +163,17 @@ fn run_stats_printer(
     let mut stats = Stats::new();
     let mut prev_stats = Stats::new();
     loop {
-        select! {
-            recv(recv_processor) -> msg => if let Ok(processor_stats) = msg { stats.processor.add(processor_stats) },
-            recv(recv_worker) -> msg => if let Ok(worker_stats) = msg{ stats.worker.add(worker_stats) },
-        };
-
-        if last_printed_at.elapsed().as_secs() >= 1 {
-            stats.print(prev_stats, last_printed_at.elapsed().as_secs_f32());
-            prev_stats = stats;
-            last_printed_at = Instant::now();
+        while let Ok(processor_stats) = recv_processor.try_recv() {
+            stats.processor.add(processor_stats)
         }
+        while let Ok(worker_stats) = recv_worker.try_recv() {
+            stats.worker.add(worker_stats)
+        }
+
+        stats.print(prev_stats, last_printed_at.elapsed().as_secs_f32());
+        prev_stats = stats;
+        last_printed_at = Instant::now();
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
@@ -295,9 +293,10 @@ fn start_threads(
     let (send_decided, recv_decided) = crossbeam::channel::unbounded();
     let (recv_undecided, send_undecided) = with_starting_queue(starting_queue);
 
-    let manager = std::thread::spawn(|| {
-        run_processor(conn, send_stats_processor, send_undecided, recv_decided)
-    });
+    let processor = thread::Builder::new()
+        .name("processor".to_string())
+        .spawn(|| run_processor(conn, send_stats_processor, send_undecided, recv_decided))
+        .unwrap();
 
     let mut workers = vec![];
     for i in 0..num_threads {
@@ -306,14 +305,20 @@ fn start_threads(
         let send_stats_worker = send_stats_worker.clone();
         let state = state.clone();
 
-        workers.push(std::thread::spawn(move || {
-            run_decider_worker(i, state, send_stats_worker, send_decided, recv_undecided)
-        }));
+        let worker = thread::Builder::new()
+            .name(format!("worker_{i}"))
+            .spawn(move || {
+                run_decider_worker(i, state, send_stats_worker, send_decided, recv_undecided)
+            })
+            .unwrap();
+        workers.push(worker);
     }
 
-    let stats_printer =
-        std::thread::spawn(|| run_stats_printer(recv_stats_processor, recv_stats_worker));
-    (manager, workers, stats_printer)
+    let stats_printer = thread::Builder::new()
+        .name("stats".to_string())
+        .spawn(|| run_stats_printer(recv_stats_processor, recv_stats_worker))
+        .unwrap();
+    (processor, workers, stats_printer)
 }
 
 fn main() {
