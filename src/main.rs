@@ -11,7 +11,7 @@ use std::{
 
 use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
-use sqlx::SqliteConnection;
+use sqlx::{Connection, SqliteConnection};
 use turing_beavers::{
     seed::{
         add_work_to_queue, with_starting_queue, DecidedNode, MachineDecision, RunStats,
@@ -66,7 +66,7 @@ struct ProcessorStats {
     unprocessed: usize,
     rows_written: usize,
     // The number of undecided nodes
-    remaining: usize,
+    remaining: Option<usize>,
 }
 
 impl ProcessorStats {
@@ -74,7 +74,7 @@ impl ProcessorStats {
         ProcessorStats {
             unprocessed: 0,
             rows_written: 0,
-            remaining: 0,
+            remaining: Some(0),
         }
     }
 
@@ -120,31 +120,29 @@ impl Stats {
         );
 
         let worker_rate_status = format!(
-            "steps/s: {: >9.0} | decided {} in {:.1}s, total {:} at {:.0}/s, {:.0} total steps/s",
+            "steps/s: {: >9.0} | decided {}, total {:} at {:.0}/s + {:.0} total steps/s",
             this_step_rate,
             self.decided() - prev.decided(),
-            this_elapsed,
             decided,
             rate,
             total_step_rate,
         );
 
         let delta_rows_written = self.processor.rows_written - prev.processor.rows_written;
-        let processed_rate = delta_rows_written as f32 / this_elapsed;
 
         let processor_status = format!(
-            "remain: {: >6} | rows written: {: >6} | unprocessed: {: >6}",
-            self.processor.remaining,
-            self.processor.rows_written - prev.processor.rows_written,
+            "total queued: {} | total unprocessed: {: >6} | rows written: {: >6}",
+            if let Some(remaining) = self.processor.remaining {
+                format!("{: >6}", remaining)
+            } else {
+                "N/A".to_string()
+            },
+            delta_rows_written,
             self.processor.unprocessed,
         );
 
-        let processor_rate_status = format!(
-            "wrote {} rows in {:.1}s ({:}/s)",
-            delta_rows_written, this_elapsed, processed_rate,
-        );
         println!("{} | {}", worker_status, worker_rate_status);
-        println!("{} | {}", processor_status, processor_rate_status);
+        println!("{}", processor_status);
     }
 
     fn decided(&self) -> usize {
@@ -189,7 +187,7 @@ fn run_processor(
         match node.decision {
             MachineDecision::EmptyTransition(nodes) => {
                 if !sender_closed && let Err(_) = add_work_to_queue(&send_undecided, nodes) {
-                    println!("Manager -- send_undecided closed, no longer adding work to undecided queue");
+                    println!("Processor -- send_undecided closed, no longer adding work to undecided queue");
                     sender_closed = true;
                 };
             }
@@ -199,7 +197,11 @@ fn run_processor(
             MachineDecision::UndecidedSpaceLimit => (),
         }
         let unprocessed = recv_decided.len();
-        let remaining = send_undecided.len();
+        let remaining = if sender_closed {
+            None
+        } else {
+            Some(send_undecided.len())
+        };
         send_stats
             .send(ProcessorStats {
                 unprocessed,
@@ -209,9 +211,10 @@ fn run_processor(
             .unwrap();
     }
     println!(
-        "Manager -- exiting with {} queued machines written to database",
+        "Processor -- exiting with {} queued machines written to database",
         block_on(get_queue(&mut conn)).len()
-    )
+    );
+    block_on(conn.close()).expect("Processor -- Could not close database connection!");
 }
 
 fn run_decider_worker(
