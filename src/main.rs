@@ -5,14 +5,21 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    thread::JoinHandle,
     time::Instant,
 };
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::{
+    channel::{Receiver, Sender},
+    select,
+};
 use smol::block_on;
 use sqlx::SqliteConnection;
 use turing_beavers::{
-    seed::{add_work_to_queue, with_starting_queue, DecidedNode, MachineDecision, UndecidedNode},
+    seed::{
+        add_work_to_queue, with_starting_queue, DecidedNode, MachineDecision, RunStats,
+        UndecidedNode,
+    },
     sql::{
         create_tables, get_connection, get_queue, insert_initial_row, run_command, submit_result,
     },
@@ -20,25 +27,19 @@ use turing_beavers::{
 };
 
 #[derive(Debug, Clone, Copy)]
-struct Stats {
-    start: Instant,
+struct WorkerStats {
     total_steps: usize,
     total_space: usize,
-    unprocessed: usize,
-    processed: usize,
     empty: usize,
-    remaining: usize,
     halt: usize,
     nonhalt: usize,
     undecided_step: usize,
     undecided_space: usize,
 }
 
-impl Stats {
-    fn new() -> Stats {
-        Stats {
-            start: Instant::now(),
-            remaining: 0,
+impl WorkerStats {
+    fn new() -> WorkerStats {
+        WorkerStats {
             empty: 0,
             halt: 0,
             nonhalt: 0,
@@ -46,84 +47,130 @@ impl Stats {
             undecided_space: 0,
             total_steps: 0,
             total_space: 0,
-            unprocessed: 0,
-            processed: 0,
         }
     }
 
-    fn print(&mut self, prev: Stats, this_elapsed: f32) {
+    fn add(&mut self, (decision, stats): (MachineDecision, RunStats)) {
+        match decision {
+            MachineDecision::EmptyTransition(_) => self.empty += 1,
+            MachineDecision::Halting => self.halt += 1,
+            MachineDecision::NonHalting => self.nonhalt += 1,
+            MachineDecision::UndecidedStepLimit => self.undecided_step += 1,
+            MachineDecision::UndecidedSpaceLimit => self.undecided_space += 1,
+        }
+        self.total_steps += stats.get_delta_steps();
+        self.total_space += stats.space_used();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProcessorStats {
+    // The number of unprocessed decided nodes
+    unprocessed: usize,
+    rows_written: usize,
+    // The number of undecided nodes
+    remaining: usize,
+}
+
+impl ProcessorStats {
+    fn new() -> ProcessorStats {
+        ProcessorStats {
+            unprocessed: 0,
+            rows_written: 0,
+            remaining: 0,
+        }
+    }
+
+    fn add(&mut self, stats: ProcessorStats) {
+        self.rows_written += stats.rows_written;
+        self.unprocessed = stats.unprocessed;
+        self.remaining = stats.remaining;
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Stats {
+    start: Instant,
+    worker: WorkerStats,
+    processor: ProcessorStats,
+}
+
+impl Stats {
+    fn new() -> Stats {
+        Stats {
+            start: Instant::now(),
+            worker: WorkerStats::new(),
+            processor: ProcessorStats::new(),
+        }
+    }
+
+    fn print(&self, prev: Stats, this_elapsed: f32) {
         let decided = self.decided();
 
-        let delta_total_steps = self.total_steps - prev.total_steps;
+        let delta_total_steps = self.worker.total_steps - prev.worker.total_steps;
         let total_elapsed = self.start.elapsed().as_secs_f32();
 
         let this_step_rate = delta_total_steps as f32 / this_elapsed;
         let rate = decided as f32 / total_elapsed;
-        let total_step_rate = self.total_steps as f32 / total_elapsed;
+        let total_step_rate = self.worker.total_steps as f32 / total_elapsed;
 
-        let status = format!("remain: {: >6} | proc: {: >5} | unproc: {: >4} | empty: {: >3} | halt: {: >2} | nonhalt: {: >4} | undec step: {: >3} | undec space: {: >3}",
-            self.remaining,
-            self.processed - prev.processed,
-            self.unprocessed,
-            self.empty - prev.empty,
-            self.halt - prev.halt,
-            self.nonhalt - prev.nonhalt,
-            self.undecided_step - prev.undecided_step,
-            self.undecided_space - prev.undecided_space,
+        let worker_status = format!("new empty: {: >5} | halt: {: >5} | nonhalt: {: >5} | undec step: {: >5} | undec space: {: >5}",
+            self.worker.empty - prev.worker.empty,
+            self.worker.halt - prev.worker.halt,
+            self.worker.nonhalt - prev.worker.nonhalt,
+            self.worker.undecided_step - prev.worker.undecided_step,
+            self.worker.undecided_space - prev.worker.undecided_space,
         );
 
-        let delta_processed = self.processed - prev.processed;
-        let processed_rate = delta_processed as f32 / this_elapsed;
-
-        let rate_status = format!(
-            "steps/s: {this_step_rate: >9.0} | decided {} in {:.1}s, total {:} at {:.0}/s, {:.0} steps/s | processed {} in {:.1}s ({:}/s)",
+        let worker_rate_status = format!(
+            "steps/s: {: >9.0} | decided {} in {:.1}s, total {:} at {:.0}/s, {:.0} total steps/s",
+            this_step_rate,
             self.decided() - prev.decided(),
             this_elapsed,
             decided,
             rate,
             total_step_rate,
-            delta_processed,
-            this_elapsed,
-            processed_rate,
-            );
-        println!("{} {}", status, rate_status);
+        );
+
+        let delta_rows_written = self.processor.rows_written - prev.processor.rows_written;
+        let processed_rate = delta_rows_written as f32 / this_elapsed;
+
+        let processor_status = format!(
+            "remain: {: >6} | rows written: {: >6} | unprocessed: {: >6}",
+            self.processor.remaining,
+            self.processor.rows_written - prev.processor.rows_written,
+            self.processor.unprocessed,
+        );
+
+        let processor_rate_status = format!(
+            "wrote {} rows in {:.1}s ({:}/s)",
+            delta_rows_written, this_elapsed, processed_rate,
+        );
+        println!("{} | {}", worker_status, worker_rate_status);
+        println!("{} | {}", processor_status, processor_rate_status);
     }
 
     fn decided(&self) -> usize {
-        self.halt + self.nonhalt + self.undecided_space + self.undecided_step
+        self.worker.halt
+            + self.worker.nonhalt
+            + self.worker.undecided_space
+            + self.worker.undecided_step
     }
 }
 
-fn run_manager(
-    mut db_connection: SqliteConnection,
-    send_undecided: Sender<UndecidedNode>,
-    recv_decided: Receiver<DecidedNode>,
+fn run_stats_printer(
+    recv_processor: Receiver<ProcessorStats>,
+    recv_worker: Receiver<(MachineDecision, RunStats)>,
 ) {
+    let mut last_printed_at = Instant::now();
     let mut stats = Stats::new();
     let mut prev_stats = Stats::new();
-    let mut last_printed_at = Instant::now();
-
-    let mut sender_closed = false;
-    while let Ok(node) = recv_decided.recv() {
-        let submitted = block_on(submit_result(&mut db_connection, &node)).unwrap();
-        stats.processed += submitted;
-        match node.decision {
-            MachineDecision::EmptyTransition(nodes) => {
-                if !sender_closed && let Err(_) = add_work_to_queue(&send_undecided, nodes) {
-                    println!("Manager -- send_undecided closed, no longer adding work to undecided queue");
-                    sender_closed = true;
-                };
-                stats.empty += 1
-            }
-            MachineDecision::Halting => stats.halt += 1,
-            MachineDecision::NonHalting => stats.nonhalt += 1,
-            MachineDecision::UndecidedStepLimit => stats.undecided_step += 1,
-            MachineDecision::UndecidedSpaceLimit => stats.undecided_space += 1,
-        }
-        stats.unprocessed = recv_decided.len();
-        stats.remaining = send_undecided.len();
-        stats.total_steps += node.stats.get_delta_steps();
-        stats.total_space += node.stats.space_used();
+    loop {
+        select! {
+            recv(recv_processor) -> msg => if let Ok(processor_stats) = msg { stats.processor.add(processor_stats) },
+            recv(recv_worker) -> msg => if let Ok(worker_stats) = msg{ stats.worker.add(worker_stats) },
+            default => (),
+        };
 
         if last_printed_at.elapsed().as_secs() >= 1 {
             stats.print(prev_stats, last_printed_at.elapsed().as_secs_f32());
@@ -131,20 +178,57 @@ fn run_manager(
             last_printed_at = Instant::now();
         }
     }
+}
+
+fn run_processor(
+    mut conn: SqliteConnection,
+    send_stats: Sender<ProcessorStats>,
+    send_undecided: Sender<UndecidedNode>,
+    recv_decided: Receiver<DecidedNode>,
+) {
+    let mut sender_closed = false;
+    while let Ok(node) = recv_decided.recv() {
+        let rows_written = block_on(submit_result(&mut conn, &node)).unwrap();
+        match node.decision {
+            MachineDecision::EmptyTransition(nodes) => {
+                if !sender_closed && let Err(_) = add_work_to_queue(&send_undecided, nodes) {
+                    println!("Manager -- send_undecided closed, no longer adding work to undecided queue");
+                    sender_closed = true;
+                };
+            }
+            MachineDecision::Halting => (),
+            MachineDecision::NonHalting => (),
+            MachineDecision::UndecidedStepLimit => (),
+            MachineDecision::UndecidedSpaceLimit => (),
+        }
+        let unprocessed = recv_decided.len();
+        let remaining = send_undecided.len();
+        send_stats
+            .send(ProcessorStats {
+                unprocessed,
+                rows_written,
+                remaining,
+            })
+            .unwrap();
+    }
     println!(
         "Manager -- exiting with {} queued machines written to database",
-        block_on(get_queue(&mut db_connection)).len()
+        block_on(get_queue(&mut conn)).len()
     )
 }
 
 fn run_decider_worker(
     thread_id: usize,
-    config: Arc<Config>,
+    state: Arc<SharedThreadState>,
+    send_stats: Sender<(MachineDecision, RunStats)>,
     send_decided: Sender<DecidedNode>,
     recv_undecided: Receiver<UndecidedNode>,
 ) {
     while let Ok(mut node) = recv_undecided.recv() {
         let result = node.decide();
+        send_stats
+            .send((result.decision.clone(), result.stats))
+            .unwrap();
         match send_decided.send(result) {
             Ok(()) => (),
             Err(_) => {
@@ -153,35 +237,26 @@ fn run_decider_worker(
             }
         }
 
-        if config.should_exit() {
+        if state.should_exit() {
             println!("Worker {} exiting -- graceful shutdown", thread_id);
             return;
         }
     }
 }
 
-struct Config {
-    max_run_time: Option<u64>,
-    now: Instant,
+struct SharedThreadState {
     manually_shutdown: AtomicBool,
 }
 
-impl Config {
-    fn new(max_run_time: Option<u64>) -> Config {
-        Config {
-            max_run_time,
-            now: Instant::now(),
+impl SharedThreadState {
+    fn new() -> SharedThreadState {
+        SharedThreadState {
             manually_shutdown: AtomicBool::from(false),
         }
     }
 
     fn should_exit(&self) -> bool {
-        let exceeded_runtime = if let Some(max_run_time) = self.max_run_time {
-            self.now.elapsed().as_secs() > max_run_time
-        } else {
-            false
-        };
-        exceeded_runtime || self.manually_shutdown.load(Ordering::Relaxed)
+        self.manually_shutdown.load(Ordering::Relaxed)
     }
 }
 
@@ -201,10 +276,10 @@ fn init_connection(file: &str) -> (SqliteConnection, Vec<TableArray>) {
     (conn, starting_queue)
 }
 
-fn install_ctrlc_handler(config: Arc<Config>) {
+fn install_ctrlc_handler(state: Arc<SharedThreadState>) {
     ctrlc::set_handler(move || {
         println!("Control-C caught! Shutting down gracefully");
-        config.manually_shutdown.store(true, Ordering::Relaxed);
+        state.manually_shutdown.store(true, Ordering::Relaxed);
     })
     .expect("Could not set Ctrl-C handler");
 }
@@ -213,37 +288,46 @@ fn start_threads(
     starting_queue: Vec<TableArray>,
     conn: SqliteConnection,
     num_threads: usize,
-    config: Arc<Config>,
-) -> (
-    std::thread::JoinHandle<()>,
-    Vec<std::thread::JoinHandle<()>>,
-) {
+    state: Arc<SharedThreadState>,
+) -> (JoinHandle<()>, Vec<JoinHandle<()>>, JoinHandle<()>) {
+    let (send_stats_processor, recv_stats_processor) = crossbeam::channel::unbounded();
+    let (send_stats_worker, recv_stats_worker) = crossbeam::channel::unbounded();
+
     let (send_decided, recv_decided) = crossbeam::channel::unbounded();
     let (recv_undecided, send_undecided) = with_starting_queue(starting_queue);
-    let manager = std::thread::spawn(|| run_manager(conn, send_undecided, recv_decided));
+
+    let manager = std::thread::spawn(|| {
+        run_processor(conn, send_stats_processor, send_undecided, recv_decided)
+    });
 
     let mut workers = vec![];
     for i in 0..num_threads {
         let send_decided = send_decided.clone();
         let recv_undecided = recv_undecided.clone();
-        let config = config.clone();
+        let send_stats_worker = send_stats_worker.clone();
+        let state = state.clone();
+
         workers.push(std::thread::spawn(move || {
-            run_decider_worker(i, config, send_decided, recv_undecided)
+            run_decider_worker(i, state, send_stats_worker, send_decided, recv_undecided)
         }));
     }
-    (manager, workers)
+
+    let stats_printer =
+        std::thread::spawn(|| run_stats_printer(recv_stats_processor, recv_stats_worker));
+    (manager, workers, stats_printer)
 }
 
 fn main() {
-    let num_threads = 10;
-    let config = Arc::new(Config::new(None));
+    let num_threads = 1;
 
     let (conn, starting_queue) =
         init_connection("/Users/aaron/dev/Rust/turing-beavers/results.sqlite");
     println!("Starting queue size: {}", starting_queue.len());
 
-    install_ctrlc_handler(config.clone());
-    let (manager, workers) = start_threads(starting_queue, conn, num_threads, config);
+    let state = Arc::new(SharedThreadState::new());
+    install_ctrlc_handler(state.clone());
+    let (manager, workers, _stats_printer) =
+        start_threads(starting_queue, conn, num_threads, state);
 
     for thread in workers {
         thread.join().unwrap()

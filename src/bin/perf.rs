@@ -7,7 +7,7 @@ fn run(num_machines: usize) {
     while num_decided < num_machines {
         let result = std::hint::black_box(recv.recv().unwrap().decide());
         match result.decision {
-            MachineDecision::EmptyTransition(nodes) => add_work_to_queue(&send, nodes),
+            MachineDecision::EmptyTransition(nodes) => add_work_to_queue(&send, nodes).unwrap(),
             _ => num_decided += 1,
         }
     }
