@@ -137,8 +137,8 @@ impl Stats {
             } else {
                 "N/A".to_string()
             },
-            delta_rows_written,
             self.processor.unprocessed,
+            delta_rows_written,
         );
 
         println!("{} | {}", worker_status, worker_rate_status);
