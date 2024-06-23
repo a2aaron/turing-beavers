@@ -12,7 +12,7 @@ crossbeam = "0.8.4"
 ctrlc = "3.4.4"
 rand = "0.8.5"
 smol = "2.0.0"
-sqlx = { version = "0.7.4", features = ["sqlite"] }
+sqlx = { version = "0.7.4", features = ["sqlite", "macros"], default-features = false }
 
 [profile.release]
 debug = true

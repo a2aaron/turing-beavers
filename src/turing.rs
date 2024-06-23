@@ -2,7 +2,7 @@
 use proptest_derive::Arbitrary;
 
 use crate::seed::SPACE_LIMIT;
-use std::{fmt::Display, str::FromStr};
+use std::{error::Error, fmt::Display, str::FromStr};
 
 // for choosing which implementation to use
 impl Transition {
@@ -211,7 +211,7 @@ impl Transition {
 }
 
 impl TryFrom<u8> for Transition {
-    type Error = ();
+    type Error = String;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -239,13 +239,13 @@ impl TryFrom<u8> for Transition {
             0b000_101_0_1 => Ok(Transition::R0Z),
             0b000_101_1_0 => Ok(Transition::L1Z),
             0b000_101_1_1 => Ok(Transition::R1Z),
-            _ => Err(()),
+            _ => Err(format!("Expected value in range 0 to 23, got {value}")),
         }
     }
 }
 
 pub type Action = Option<Transition>;
-fn action_from_u8(x: u8) -> Result<Action, ()> {
+fn action_from_u8(x: u8) -> Result<Action, String> {
     match x {
         0 => Ok(None),
         x => Ok(Some(Transition::try_from(x - 1)?)),
@@ -565,7 +565,7 @@ impl From<TableArray> for [u8; 7] {
 }
 
 impl TryFrom<[u8; 7]> for TableArray {
-    type Error = ();
+    type Error = String;
 
     fn try_from(array: [u8; 7]) -> Result<Self, Self::Error> {
         // Add top padding byte of zeros
@@ -586,7 +586,7 @@ impl TryFrom<[u8; 7]> for TableArray {
 
         // sanity check: No u64 should have the top 14 bits set
         if x != 0 {
-            Err(())
+            Err(format!("Expected 14 bits to remain unset. Got {}", x))
         } else {
             Ok(table)
         }
@@ -601,7 +601,7 @@ impl From<TableArray> for [u8; 10] {
 }
 
 impl TryFrom<[u8; 10]> for TableArray {
-    type Error = ();
+    type Error = String;
 
     fn try_from(array: [u8; 10]) -> Result<Self, Self::Error> {
         let array = array.try_map(|x| action_from_u8(x))?;
@@ -610,17 +610,20 @@ impl TryFrom<[u8; 10]> for TableArray {
 }
 
 impl TryFrom<&[u8]> for TableArray {
-    type Error = ();
+    type Error = Box<dyn Error + Send + Sync>;
 
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
         if slice.len() == 7 {
-            let array: [u8; 7] = slice.try_into().map_err(|_| ())?;
-            TableArray::try_from(array)
+            let array: [u8; 7] = slice.try_into()?;
+            Ok(TableArray::try_from(array)?)
         } else if slice.len() == 10 {
-            let array: [u8; 10] = slice.try_into().map_err(|_| ())?;
-            TableArray::try_from(array)
+            let array: [u8; 10] = slice.try_into()?;
+            Ok(TableArray::try_from(array)?)
         } else {
-            Err(())
+            Err(format!(
+                "Expected slice of length 7 or 10. Got {}",
+                slice.len()
+            ))?
         }
     }
 }

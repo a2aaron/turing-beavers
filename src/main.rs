@@ -280,11 +280,6 @@ fn init_connection(file: &str) -> (SqliteConnection, Vec<TableArray>) {
     let mut conn: SqliteConnection = block_on(get_connection(file));
     block_on(create_tables(&mut conn));
 
-    // PRAGMAs set here are from https://phiresky.github.io/blog/2020/sqlite-performance-tuning/
-    // This is to allow faster writes to the database.
-    block_on(run_command(&mut conn, "PRAGMA synchronous = normal"));
-    block_on(run_command(&mut conn, "PRAGMA journal_mode = WAL;"));
-
     // set up initial queue
     block_on(insert_initial_row(&mut conn));
 
