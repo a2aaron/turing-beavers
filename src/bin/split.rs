@@ -3,9 +3,8 @@ use std::{
     time::Instant,
 };
 
-use sqlx::{prelude::FromRow, sqlite::SqliteConnectOptions, ConnectOptions, SqliteConnection};
-
 use clap::Parser;
+use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection, FromRow, SqliteConnection};
 
 use smol::{
     block_on,
@@ -176,6 +175,12 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
         total_i += 1;
     }
 
+    // Close the connections explicitly so that sqlite will clean up the wal and shm files.
+    decided_conn.close().await.unwrap();
+    for conn in undecided_conns {
+        conn.close().await.unwrap();
+    }
+    println!("{}/{} (100%)", row_count, row_count,);
     Ok(())
 }
 
