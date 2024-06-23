@@ -55,11 +55,11 @@ impl<'r> Decode<'r, Sqlite> for Decision {
         let value = match value {
             0 => Ok(Decision::Halting),
             1 => Ok(Decision::NonHalting),
-            2 => Ok(Decision::UndecidedSpaceLimit),
+            2 => Ok(Decision::UndecidedStepLimit),
             3 => Ok(Decision::UndecidedSpaceLimit),
             4 => Ok(Decision::EmptyTransition),
             _ => Err(format!(
-                "Decision out of range (expected 0 to 4, got {value}"
+                "Decision out of range (expected 0 to 4, got {value})"
             )),
         };
         Ok(value?)
