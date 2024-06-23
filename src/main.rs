@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use clap::{arg, Parser};
 use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
 use sqlx::{Connection, SqliteConnection};
@@ -301,7 +302,7 @@ fn install_ctrlc_handler(state: Arc<SharedThreadState>) {
 fn start_threads(
     starting_queue: Vec<TableArray>,
     conn: SqliteConnection,
-    num_threads: usize,
+    num_workers: usize,
     state: Arc<SharedThreadState>,
 ) -> (JoinHandle<()>, Vec<JoinHandle<()>>, JoinHandle<()>) {
     let (send_stats_processor, recv_stats_processor) = crossbeam::channel::unbounded();
@@ -327,7 +328,7 @@ fn start_threads(
         .unwrap();
 
     let mut workers = vec![];
-    for i in 0..num_threads {
+    for i in 0..num_workers {
         let send_decided = send_decided.clone();
         let recv_undecided = recv_undecided.clone();
         let send_stats_worker = send_stats_worker.clone();
@@ -349,8 +350,15 @@ fn start_threads(
     (processor, workers, stats_printer)
 }
 
+#[derive(Parser, Debug)]
+struct Args {
+    /// Number of worker threads to run with.
+    #[arg(short, long)]
+    workers: usize,
+}
+
 fn main() {
-    let num_threads = 1;
+    let args = Args::parse();
 
     let (conn, starting_queue) =
         init_connection("/Users/aaron/dev/Rust/turing-beavers/results.sqlite");
@@ -359,7 +367,7 @@ fn main() {
     let state = Arc::new(SharedThreadState::new());
     install_ctrlc_handler(state.clone());
     let (manager, workers, _stats_printer) =
-        start_threads(starting_queue, conn, num_threads, state);
+        start_threads(starting_queue, conn, args.workers, state);
 
     for thread in workers {
         thread.join().unwrap()
