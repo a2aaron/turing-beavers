@@ -10,6 +10,8 @@ use crate::{
     turing::Table,
 };
 
+type PackedTable = [u8; 7];
+
 pub async fn submit_result(
     conn: &mut SqliteConnection,
     node: &DecidedNode,
@@ -32,8 +34,9 @@ pub async fn submit_result(
 }
 
 pub async fn insert_row(conn: &mut SqliteConnection, table: Table) {
+    let table: PackedTable = table.into();
     let query = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
-        .bind(table.to_string())
+        .bind(&table[..])
         .execute(conn);
     let result = query.await.unwrap();
     assert_eq!(result.rows_affected(), 1);
@@ -41,17 +44,16 @@ pub async fn insert_row(conn: &mut SqliteConnection, table: Table) {
 
 pub async fn update_row(conn: &mut SqliteConnection, node: &DecidedNode) {
     let decision = match node.decision {
-        MachineDecision::Halting => "Halting".to_string(),
-        MachineDecision::NonHalting => "Non-Halting".to_string(),
-        MachineDecision::UndecidedStepLimit => "Undecided (Step)".to_string(),
-        MachineDecision::UndecidedSpaceLimit => "Undecided (Space)".to_string(),
-        MachineDecision::EmptyTransition(_) => "Empty Transition".to_string(),
+        MachineDecision::Halting => 0,
+        MachineDecision::NonHalting => 1,
+        MachineDecision::UndecidedStepLimit => 2,
+        MachineDecision::UndecidedSpaceLimit => 3,
+        MachineDecision::EmptyTransition(_) => 4,
     };
-    let table = node.table.to_string();
-
+    let table: PackedTable = node.table.into();
     // Update decision row
     let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
-        .bind(table.clone())
+        .bind(&table[..])
         .bind(decision)
         .execute(&mut *conn)
         .await
@@ -60,7 +62,7 @@ pub async fn update_row(conn: &mut SqliteConnection, node: &DecidedNode) {
 
     // Insert stats--first grab the id
     let id: i64 = sqlx::query_scalar("SELECT id FROM results WHERE machine = $1")
-        .bind(table)
+        .bind(&table[..])
         .fetch_one(&mut *conn)
         .await
         .unwrap();
@@ -80,8 +82,8 @@ pub async fn create_tables(conn: &mut SqliteConnection) {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS results (
         id       INTEGER NOT NULL PRIMARY KEY,
-        machine  TEXT    NOT NULL UNIQUE,
-        decision TEXT        NULL)",
+        machine  BLOB    NOT NULL UNIQUE,
+        decision INTEGER     NULL)",
     )
     .execute(&mut *conn)
     .await
@@ -102,23 +104,23 @@ pub async fn insert_initial_row(conn: &mut SqliteConnection) {
     // Try to insert the initial row. OR IGNORE is used here to not do the insert if we have already
     // decided the row.
     let starting_table = Table::from_str(STARTING_MACHINE).unwrap();
+    let array: PackedTable = starting_table.into();
     sqlx::query("INSERT OR IGNORE INTO results (machine, decision) VALUES($1, NULL)")
-        .bind(starting_table.to_string())
+        .bind(&array[..])
         .execute(conn)
         .await
         .unwrap();
 }
 
 pub async fn get_queue(conn: &mut SqliteConnection) -> Vec<Table> {
-    let tables: Vec<String> =
-        sqlx::query_scalar("SELECT machine FROM results WHERE decision IS NULL")
-            .fetch_all(conn)
-            .await
-            .unwrap();
+    let tables = sqlx::query_scalar("SELECT machine FROM results WHERE decision IS NULL")
+        .fetch_all(conn)
+        .await
+        .unwrap();
 
     tables
         .into_iter()
-        .map(|t| Table::from_str(&t).unwrap())
+        .map(|t: Vec<u8>| Table::try_from(t.as_slice()).unwrap())
         .collect()
 }
 

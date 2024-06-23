@@ -1,6 +1,8 @@
-use std::{fmt::Display, str::FromStr};
+#[cfg(test)]
+use proptest_derive::Arbitrary;
 
 use crate::seed::SPACE_LIMIT;
+use std::{fmt::Display, str::FromStr};
 
 // for choosing which implementation to use
 impl Transition {
@@ -87,6 +89,7 @@ impl Display for State {
 ///  |   +------- state     (0 = A, 1 = B, 2 = C, 3 = D, 4 = E, 5 = Halt)
 ///  +----------- unused
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Arbitrary))]
 #[repr(u8)]
 pub enum Transition {
     L0A = 0b000_000_0_0,
@@ -207,7 +210,54 @@ impl Transition {
     }
 }
 
+impl TryFrom<u8> for Transition {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0b000_000_0_0 => Ok(Transition::L0A),
+            0b000_000_0_1 => Ok(Transition::R0A),
+            0b000_000_1_0 => Ok(Transition::L1A),
+            0b000_000_1_1 => Ok(Transition::R1A),
+            0b000_001_0_0 => Ok(Transition::L0B),
+            0b000_001_0_1 => Ok(Transition::R0B),
+            0b000_001_1_0 => Ok(Transition::L1B),
+            0b000_001_1_1 => Ok(Transition::R1B),
+            0b000_010_0_0 => Ok(Transition::L0C),
+            0b000_010_0_1 => Ok(Transition::R0C),
+            0b000_010_1_0 => Ok(Transition::L1C),
+            0b000_010_1_1 => Ok(Transition::R1C),
+            0b000_011_0_0 => Ok(Transition::L0D),
+            0b000_011_0_1 => Ok(Transition::R0D),
+            0b000_011_1_0 => Ok(Transition::L1D),
+            0b000_011_1_1 => Ok(Transition::R1D),
+            0b000_100_0_0 => Ok(Transition::L0E),
+            0b000_100_0_1 => Ok(Transition::R0E),
+            0b000_100_1_0 => Ok(Transition::L1E),
+            0b000_100_1_1 => Ok(Transition::R1E),
+            0b000_101_0_0 => Ok(Transition::L0Z),
+            0b000_101_0_1 => Ok(Transition::R0Z),
+            0b000_101_1_0 => Ok(Transition::L1Z),
+            0b000_101_1_1 => Ok(Transition::R1Z),
+            _ => Err(()),
+        }
+    }
+}
+
 pub type Action = Option<Transition>;
+fn action_from_u8(x: u8) -> Result<Action, ()> {
+    match x {
+        0 => Ok(None),
+        x => Ok(Some(Transition::try_from(x - 1)?)),
+    }
+}
+fn action_into_u8(action: Action) -> u8 {
+    match action {
+        None => 0,
+        Some(x) => 1 + x as u8,
+    }
+}
+
 /// The transition table. Note that this is written to allow for ease with enumerating transition
 /// tables. An [Action] which is None is used to represent that a particular transition is unusued or
 /// unreachable (and hence could be replaced by any Transition without affecting the behavior of the
@@ -434,6 +484,7 @@ impl From<TableArray> for TableStruct {
 /// 0b0000 000 0
 ///        ^^^ ^ Symbol
 ///         +--- State (excluding Halt)
+#[cfg_attr(test, derive(Arbitrary))]
 pub struct TableArray([Action; 10]);
 impl TableArray {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {
@@ -476,6 +527,101 @@ impl TableArray {
             + c_visited as usize
             + d_visited as usize
             + e_visited as usize
+    }
+}
+
+impl From<TableArray> for [u8; 7] {
+    fn from(table: TableArray) -> Self {
+        // We start with u64. Each element of the TableArray is packed into 5 bits. The top 14 bits are unusued
+        // 000000000000000000000000000000 00000 00000 00000 00000 00000 00000 00000 00000 00000 00000
+        // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^
+        // |                                |     |     |     |     |     |     |     |     |     +-- table.0[0] (5 bits)
+        // |                                |     |     |     |     |     |     |     |     +-------- table.0[1] (5 bits)
+        // |                                |     |     |     |     |     |     |     +-------------- table.0[2] (5 bits)
+        // |                                |     |     |     |     |     |     + ------------------- table.0[3] (5 bits)
+        // |                                |     |     |     |     |     +-------------------------- table.0[4] (5 bits)
+        // |                                |     |     |     |     +-------------------------------- table.0[5] (5 bits)
+        // |                                |     |     |     +-------------------------------------- table.0[6] (5 bits)
+        // |                                |     |     +-------------------------------------------- table.0[7] (5 bits)
+        // |                                |     +-------------------------------------------------- table.0[8] (5 bits)
+        // |                                +-------------------------------------------------------- table.0[9] (5 bits)
+        // +----------------------------------------------------------------------------------------- unused     (14 bits)
+        let mut x = 0;
+
+        for i in 0..table.0.len() {
+            // bits is a u64 between 0 and 25, and hence fits into 5 bits
+            let bits = action_into_u8(table.0[i]) as u64;
+            x |= bits << i * 5;
+        }
+
+        let array = x.to_le_bytes();
+        // Throw away top byte--it will always be zero.
+        assert_eq!(array[7], 0);
+        let array: [u8; 7] = [
+            array[0], array[1], array[2], array[3], array[4], array[5], array[6],
+        ];
+        array
+    }
+}
+
+impl TryFrom<[u8; 7]> for TableArray {
+    type Error = ();
+
+    fn try_from(array: [u8; 7]) -> Result<Self, Self::Error> {
+        // Add top padding byte of zeros
+        let array = [
+            array[0], array[1], array[2], array[3], array[4], array[5], array[6], 0,
+        ];
+        let mut x = u64::from_le_bytes(array);
+        let mut table = TableArray([None; 10]);
+        for i in 0..table.0.len() {
+            // Get lower
+            let lower_5 = (x & 0b000_11111) as u8;
+            let action = action_from_u8(lower_5)?;
+            table.0[i] = action;
+
+            // Shift next five bits down
+            x = x >> 5;
+        }
+
+        // sanity check: No u64 should have the top 14 bits set
+        if x != 0 {
+            Err(())
+        } else {
+            Ok(table)
+        }
+    }
+}
+
+impl From<TableArray> for [u8; 10] {
+    fn from(table: TableArray) -> Self {
+        let array = table.0;
+        array.map(|action| action_into_u8(action))
+    }
+}
+
+impl TryFrom<[u8; 10]> for TableArray {
+    type Error = ();
+
+    fn try_from(array: [u8; 10]) -> Result<Self, Self::Error> {
+        let array = array.try_map(|x| action_from_u8(x))?;
+        Ok(TableArray(array))
+    }
+}
+
+impl TryFrom<&[u8]> for TableArray {
+    type Error = ();
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        if slice.len() == 7 {
+            let array: [u8; 7] = slice.try_into().map_err(|_| ())?;
+            TableArray::try_from(array)
+        } else if slice.len() == 10 {
+            let array: [u8; 10] = slice.try_into().map_err(|_| ())?;
+            TableArray::try_from(array)
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -631,6 +777,8 @@ impl Tape {
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
+
+    use proptest::{prop_assert_eq, proptest};
 
     use crate::{
         seed::SPACE_LIMIT,
@@ -812,5 +960,37 @@ mod test {
 
         assert_eq!(table.visited_states(), table2.visited_states());
         assert_eq!(table.defined_transitions(), table2.defined_transitions());
+    }
+
+    proptest! {
+        #[test]
+        fn test_tablearray_into_array(table: TableArray) {
+            let array = <[u8; 10]>::from(table);
+            let table2 = TableArray::try_from(array).unwrap();
+            prop_assert_eq!(table, table2);
+        }
+
+        #[test]
+        fn test_tablearray_into_slice(table: TableArray) {
+            let array = <[u8; 10]>::from(table);
+            let slice: &[u8] = array.as_slice();
+            let table2 = TableArray::try_from(slice).unwrap();
+            prop_assert_eq!(table, table2);
+        }
+
+        #[test]
+        fn test_tablearray_into_array_into_packed_array(table: TableArray) {
+            let array = <[u8; 7]>::from(table);
+            let table2 = TableArray::try_from(array).unwrap();
+            prop_assert_eq!(table, table2);
+        }
+
+        #[test]
+        fn test_tablearray_into_slice2(table: TableArray) {
+            let array = <[u8; 7]>::from(table);
+            let slice: &[u8] = array.as_slice();
+            let table2 = TableArray::try_from(slice).unwrap();
+            prop_assert_eq!(table, table2);
+        }
     }
 }

@@ -25,3 +25,7 @@ debug = false
 split-debuginfo = "off"
 # panic = "abort" # seems to make things slower???
 lto = "thin"
+
+[dev-dependencies]
+proptest = "1.5.0"
+proptest-derive = "0.5.0"

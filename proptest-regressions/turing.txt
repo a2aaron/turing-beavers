@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d3cfe03ba09686d6eb5597c2fe3bde8434c41ff298daaac450f3edf624ed15aa # shrinks to table = TableArray([None, None, None, None, None, None, None, None, None, None])
