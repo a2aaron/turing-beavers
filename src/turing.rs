@@ -12,7 +12,7 @@ impl Transition {
     }
 }
 // pub type Table = TableStruct; // slower
-pub type Table = TableArray;
+pub type MachineTable = MachineTableArray;
 
 impl Tape {
     pub fn execute(&mut self, transition: Transition) {
@@ -268,7 +268,7 @@ fn action_into_u8(action: Action) -> u8 {
 /// is for. For example, `state_d_1` is the transition rule for when the Turing machine reads a
 /// [Symbol::One] in [State::D]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TableStruct {
+pub struct MachineTableStruct {
     pub state_a_0: Action,
     pub state_a_1: Action,
     pub state_b_0: Action,
@@ -281,7 +281,7 @@ pub struct TableStruct {
     pub state_e_1: Action,
 }
 
-impl TableStruct {
+impl MachineTableStruct {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {
         match (state, symbol) {
             (State::A, Symbol::Zero) => self.state_a_0,
@@ -346,7 +346,7 @@ impl TableStruct {
     }
 }
 
-impl FromStr for TableStruct {
+impl FromStr for MachineTableStruct {
     type Err = ();
     /// Parse a Turing machine string in the following format:
     /// `AAAaaa-BBBbbb-CCCccc-DDDddd-EEEeee`
@@ -417,7 +417,7 @@ impl FromStr for TableStruct {
             let (state_d_0, state_d_1) = parse_group(groups[3])?;
             let (state_e_0, state_e_1) = parse_group(groups[4])?;
 
-            Ok(TableStruct {
+            Ok(MachineTableStruct {
                 state_a_0,
                 state_a_1,
                 state_b_0,
@@ -433,7 +433,7 @@ impl FromStr for TableStruct {
     }
 }
 
-impl Display for TableStruct {
+impl Display for MachineTableStruct {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fn display_action(action: &Action) -> String {
             if let Some(action) = action {
@@ -461,9 +461,9 @@ impl Display for TableStruct {
     }
 }
 
-impl From<TableArray> for TableStruct {
-    fn from(table: TableArray) -> Self {
-        TableStruct {
+impl From<MachineTableArray> for MachineTableStruct {
+    fn from(table: MachineTableArray) -> Self {
+        MachineTableStruct {
             state_a_0: table.0[0],
             state_a_1: table.0[1],
             state_b_0: table.0[2],
@@ -485,8 +485,8 @@ impl From<TableArray> for TableStruct {
 ///        ^^^ ^ Symbol
 ///         +--- State (excluding Halt)
 #[cfg_attr(test, derive(Arbitrary))]
-pub struct TableArray([Action; 10]);
-impl TableArray {
+pub struct MachineTableArray([Action; 10]);
+impl MachineTableArray {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {
         let index = (state as usize) * 2 + symbol as usize;
         self.0[index]
@@ -542,8 +542,8 @@ impl TableArray {
     }
 }
 
-impl From<TableArray> for [u8; 7] {
-    fn from(table: TableArray) -> Self {
+impl From<MachineTableArray> for [u8; 7] {
+    fn from(table: MachineTableArray) -> Self {
         // We start with u64. Each element of the TableArray is packed into 5 bits. The top 14 bits are unusued
         // 000000000000000000000000000000 00000 00000 00000 00000 00000 00000 00000 00000 00000 00000
         // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^
@@ -576,7 +576,7 @@ impl From<TableArray> for [u8; 7] {
     }
 }
 
-impl TryFrom<[u8; 7]> for TableArray {
+impl TryFrom<[u8; 7]> for MachineTableArray {
     type Error = String;
 
     fn try_from(array: [u8; 7]) -> Result<Self, Self::Error> {
@@ -585,7 +585,7 @@ impl TryFrom<[u8; 7]> for TableArray {
             array[0], array[1], array[2], array[3], array[4], array[5], array[6], 0,
         ];
         let mut x = u64::from_le_bytes(array);
-        let mut table = TableArray([None; 10]);
+        let mut table = MachineTableArray([None; 10]);
         for i in 0..table.0.len() {
             // Get lower
             let lower_5 = (x & 0b000_11111) as u8;
@@ -605,32 +605,32 @@ impl TryFrom<[u8; 7]> for TableArray {
     }
 }
 
-impl From<TableArray> for [u8; 10] {
-    fn from(table: TableArray) -> Self {
+impl From<MachineTableArray> for [u8; 10] {
+    fn from(table: MachineTableArray) -> Self {
         let array = table.0;
         array.map(|action| action_into_u8(action))
     }
 }
 
-impl TryFrom<[u8; 10]> for TableArray {
+impl TryFrom<[u8; 10]> for MachineTableArray {
     type Error = String;
 
     fn try_from(array: [u8; 10]) -> Result<Self, Self::Error> {
         let array = array.try_map(|x| action_from_u8(x))?;
-        Ok(TableArray(array))
+        Ok(MachineTableArray(array))
     }
 }
 
-impl TryFrom<&[u8]> for TableArray {
+impl TryFrom<&[u8]> for MachineTableArray {
     type Error = Box<dyn Error + Send + Sync>;
 
     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
         if slice.len() == 7 {
             let array: [u8; 7] = slice.try_into()?;
-            Ok(TableArray::try_from(array)?)
+            Ok(MachineTableArray::try_from(array)?)
         } else if slice.len() == 10 {
             let array: [u8; 10] = slice.try_into()?;
-            Ok(TableArray::try_from(array)?)
+            Ok(MachineTableArray::try_from(array)?)
         } else {
             Err(format!(
                 "Expected slice of length 7 or 10. Got {}",
@@ -640,9 +640,9 @@ impl TryFrom<&[u8]> for TableArray {
     }
 }
 
-impl From<TableStruct> for TableArray {
-    fn from(table: TableStruct) -> Self {
-        TableArray([
+impl From<MachineTableStruct> for MachineTableArray {
+    fn from(table: MachineTableStruct) -> Self {
+        MachineTableArray([
             table.state_a_0,
             table.state_a_1,
             table.state_b_0,
@@ -657,17 +657,17 @@ impl From<TableStruct> for TableArray {
     }
 }
 
-impl FromStr for TableArray {
+impl FromStr for MachineTableArray {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(TableArray::from(TableStruct::from_str(s)?))
+        Ok(MachineTableArray::from(MachineTableStruct::from_str(s)?))
     }
 }
 
-impl Display for TableArray {
+impl Display for MachineTableArray {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        TableStruct::fmt(&TableStruct::from(*self), f)
+        MachineTableStruct::fmt(&MachineTableStruct::from(*self), f)
     }
 }
 
@@ -797,10 +797,10 @@ mod test {
 
     use crate::{
         seed::SPACE_LIMIT,
-        turing::{Direction, Symbol, TableArray, Tape},
+        turing::{Direction, MachineTableArray, Symbol, Tape},
     };
 
-    use super::{State, TableStruct, Transition, TAPE_LOGICAL_LENGTH};
+    use super::{MachineTableStruct, State, Transition, TAPE_LOGICAL_LENGTH};
 
     pub struct SimpleTape {
         tape: [Symbol; TAPE_LOGICAL_LENGTH],
@@ -944,11 +944,11 @@ mod test {
     #[test]
     fn test_table() {
         let s = "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA";
-        let table = TableStruct::from_str(s).unwrap();
-        let table2 = TableArray::from_str(s).unwrap();
+        let table = MachineTableStruct::from_str(s).unwrap();
+        let table2 = MachineTableArray::from_str(s).unwrap();
 
-        assert_eq!(table, TableStruct::from(table2));
-        assert_eq!(TableArray::from(table), table2);
+        assert_eq!(table, MachineTableStruct::from(table2));
+        assert_eq!(MachineTableArray::from(table), table2);
 
         let state_symbols = [
             (State::A, Symbol::Zero),
@@ -970,8 +970,8 @@ mod test {
     #[test]
     fn test_table_2() {
         let s = "1RB---_1RC1RB_---0LE_1LA1LD_------";
-        let table = TableStruct::from_str(s).unwrap();
-        let table2 = TableArray::from_str(s).unwrap();
+        let table = MachineTableStruct::from_str(s).unwrap();
+        let table2 = MachineTableArray::from_str(s).unwrap();
 
         assert_eq!(table.visited_states(), table2.visited_states());
         assert_eq!(table.defined_transitions(), table2.defined_transitions());
@@ -979,32 +979,32 @@ mod test {
 
     proptest! {
         #[test]
-        fn test_tablearray_into_array(table: TableArray) {
+        fn test_tablearray_into_array(table: MachineTableArray) {
             let array = <[u8; 10]>::from(table);
-            let table2 = TableArray::try_from(array).unwrap();
+            let table2 = MachineTableArray::try_from(array).unwrap();
             prop_assert_eq!(table, table2);
         }
 
         #[test]
-        fn test_tablearray_into_slice(table: TableArray) {
+        fn test_tablearray_into_slice(table: MachineTableArray) {
             let array = <[u8; 10]>::from(table);
             let slice: &[u8] = array.as_slice();
-            let table2 = TableArray::try_from(slice).unwrap();
+            let table2 = MachineTableArray::try_from(slice).unwrap();
             prop_assert_eq!(table, table2);
         }
 
         #[test]
-        fn test_tablearray_into_array_into_packed_array(table: TableArray) {
+        fn test_tablearray_into_array_into_packed_array(table: MachineTableArray) {
             let array = <[u8; 7]>::from(table);
-            let table2 = TableArray::try_from(array).unwrap();
+            let table2 = MachineTableArray::try_from(array).unwrap();
             prop_assert_eq!(table, table2);
         }
 
         #[test]
-        fn test_tablearray_into_slice2(table: TableArray) {
+        fn test_tablearray_into_slice2(table: MachineTableArray) {
             let array = <[u8; 7]>::from(table);
             let slice: &[u8] = array.as_slice();
-            let table2 = TableArray::try_from(slice).unwrap();
+            let table2 = MachineTableArray::try_from(slice).unwrap();
             prop_assert_eq!(table, table2);
         }
     }

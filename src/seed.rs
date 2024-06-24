@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use crossbeam::channel::{Receiver, SendError, Sender};
 
-use crate::turing::{Direction, State, Symbol, Table, Tape, Transition};
+use crate::turing::{Direction, MachineTable, State, Symbol, Tape, Transition};
 
 /// The number of steps that the 4-State 2-Symbol Busy Beaver champion runs for before halting.
 /// This is useful because any 5-State machine must access it's 5th state within 107 steps or else
@@ -41,7 +41,7 @@ pub enum StepResult {
 /// or if the [Action] supplied by the Table is empty, then nothing happens to the Tape
 /// (it is assumed that empty Actions correspond to a halt state). Otherwise, the appropriate Action
 /// is executed on the Tape.
-pub fn step(tape: &mut Tape, table: &Table) -> StepResult {
+pub fn step(tape: &mut Tape, table: &MachineTable) -> StepResult {
     if tape.state == State::Halt {
         return StepResult::Halted;
     }
@@ -107,15 +107,15 @@ impl RunStats {
 }
 
 #[derive(Debug, Clone)]
-pub struct UndecidedNode {
-    pub table: Table,
+pub struct PendingNode {
+    pub table: MachineTable,
     pub tape: Tape,
     pub stats: RunStats,
 }
 
-impl UndecidedNode {
-    pub fn new(table: Table) -> UndecidedNode {
-        UndecidedNode {
+impl PendingNode {
+    pub fn new(table: MachineTable) -> PendingNode {
+        PendingNode {
             table,
             tape: Tape::new(),
             stats: RunStats::new(),
@@ -132,7 +132,7 @@ impl UndecidedNode {
         //      3. The machine reaches an empty transition. In this case, for each transition in the
         //         set of unique transitions (described below), we duplicate the machine
         //         and replace the empty transition with a filled transition. These new machines are
-        //         added to the list of undecided machines and the original is removed.
+        //         added to the list of pending machines and the original is removed.
         let four_states_or_less = self.table.visited_states() < 5;
         let halt_reason = if four_states_or_less {
             self.run(Some(BUSY_BEAVER_FOUR_STEPS), Some(SPACE_LIMIT))
@@ -211,29 +211,31 @@ impl UndecidedNode {
 }
 
 pub struct DecidedNode {
-    pub table: Table,
+    pub table: MachineTable,
     pub decision: MachineDecision,
     pub stats: RunStats,
 }
 
-pub fn with_starting_queue(tables: Vec<Table>) -> (Receiver<UndecidedNode>, Sender<UndecidedNode>) {
+pub fn with_starting_queue(
+    tables: Vec<MachineTable>,
+) -> (Receiver<PendingNode>, Sender<PendingNode>) {
     let (send, recv) = crossbeam::channel::unbounded();
     for table in tables {
-        let machine = UndecidedNode::new(table);
+        let machine = PendingNode::new(table);
         send.send(machine).unwrap();
     }
     (recv, send)
 }
 
-pub fn new_queue() -> (Receiver<UndecidedNode>, Sender<UndecidedNode>) {
-    let table = Table::from_str(STARTING_MACHINE).unwrap();
+pub fn new_queue() -> (Receiver<PendingNode>, Sender<PendingNode>) {
+    let table = MachineTable::from_str(STARTING_MACHINE).unwrap();
     with_starting_queue(vec![table])
 }
 
 pub fn add_work_to_queue(
-    sender: &Sender<UndecidedNode>,
-    nodes: Vec<UndecidedNode>,
-) -> Result<(), SendError<UndecidedNode>> {
+    sender: &Sender<PendingNode>,
+    nodes: Vec<PendingNode>,
+) -> Result<(), SendError<PendingNode>> {
     for node in nodes {
         sender.send(node)?;
     }
@@ -246,10 +248,10 @@ pub enum MachineDecision {
     NonHalting,
     UndecidedStepLimit,
     UndecidedSpaceLimit,
-    EmptyTransition(Vec<UndecidedNode>),
+    EmptyTransition(Vec<PendingNode>),
 }
 
-fn get_child_nodes(node: &UndecidedNode) -> impl Iterator<Item = UndecidedNode> {
+fn get_child_nodes(node: &PendingNode) -> impl Iterator<Item = PendingNode> {
     let children = get_child_tables_for_transition(node.table, node.tape.state, node.tape.read());
 
     let node = node.clone();
@@ -271,10 +273,10 @@ fn get_child_nodes(node: &UndecidedNode) -> impl Iterator<Item = UndecidedNode> 
 ///    be empty.
 /// 3. `state` is the lowest unvisited state in the table.
 fn get_child_tables_for_transition(
-    table: Table,
+    table: MachineTable,
     state: State,
     symbol: Symbol,
-) -> impl Iterator<Item = Table> {
+) -> impl Iterator<Item = MachineTable> {
     let target_states = get_target_states(&table);
     // Turn each target state into 0LX, 0RX, 1LX, and 1RX
     let transitions = target_states.into_iter().flat_map(|target_state| {
@@ -296,7 +298,7 @@ fn get_child_tables_for_transition(
 
 /// Returns the target states that an undefined transition can opt to visit. This is the set of
 /// already visited states in the Table plus the lowest unvisited state.
-fn get_target_states(table: &Table) -> Vec<State> {
+fn get_target_states(table: &MachineTable) -> Vec<State> {
     let is_last_transition = table.defined_transitions() == 10 - 1;
     if is_last_transition {
         vec![State::Halt]
@@ -320,23 +322,23 @@ mod test {
 
     use crate::{
         seed::{
-            new_queue, HaltReason, MachineDecision, UndecidedNode, BB5_SPACE, BB5_STEPS,
-            SPACE_LIMIT, TIME_LIMIT,
+            new_queue, HaltReason, MachineDecision, PendingNode, BB5_SPACE, BB5_STEPS, SPACE_LIMIT,
+            TIME_LIMIT,
         },
-        turing::{State, Symbol, Table},
+        turing::{MachineTable, State, Symbol},
     };
 
     use super::{get_child_tables_for_transition, BB5_CHAMPION, STARTING_MACHINE};
 
-    fn assert_contains(tables: &[Table], table: &str) {
-        assert!(tables.contains(&Table::from_str(table).unwrap()))
+    fn assert_contains(tables: &[MachineTable], table: &str) {
+        assert!(tables.contains(&MachineTable::from_str(table).unwrap()))
     }
 
     #[test]
     fn test_bb_champion() {
-        let table = Table::from_str(BB5_CHAMPION).unwrap();
+        let table = MachineTable::from_str(BB5_CHAMPION).unwrap();
 
-        let node = &mut UndecidedNode::new(table);
+        let node = &mut PendingNode::new(table);
         let halt_reason = node.run(Some(TIME_LIMIT), Some(SPACE_LIMIT));
 
         assert_eq!(halt_reason, HaltReason::HaltState);
@@ -357,8 +359,8 @@ mod test {
 
     #[test]
     fn test_get_child_tables_1() {
-        let table = Table::from_str(STARTING_MACHINE).unwrap();
-        let tables: Vec<Table> =
+        let table = MachineTable::from_str(STARTING_MACHINE).unwrap();
+        let tables: Vec<MachineTable> =
             get_child_tables_for_transition(table, State::B, Symbol::One).collect();
 
         assert_contains(&tables, "1RB---_---0LA_------_------_------");
@@ -373,8 +375,8 @@ mod test {
 
     #[test]
     fn test_decide_node_empty_transition() {
-        let table = Table::from_str("1RB---_------_------_------_------").unwrap();
-        let mut node = UndecidedNode::new(table);
+        let table = MachineTable::from_str("1RB---_------_------_------_------").unwrap();
+        let mut node = PendingNode::new(table);
         let node = node.decide();
         assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
         let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
@@ -382,7 +384,7 @@ mod test {
         } else {
             unreachable!()
         };
-        let tables: Vec<Table> = new_nodes.iter().map(|node| node.table).collect();
+        let tables: Vec<MachineTable> = new_nodes.iter().map(|node| node.table).collect();
         println!("{:?}", tables);
         assert_eq!(tables.len(), 8);
         assert_contains(&tables, "1RB---_0LA---_------_------_------");
@@ -397,8 +399,8 @@ mod test {
 
     #[test]
     fn test_decide_node_empty_transition2() {
-        let table = Table::from_str("1RB---_1LA---_------_------_------").unwrap();
-        let mut node = UndecidedNode::new(table);
+        let table = MachineTable::from_str("1RB---_1LA---_------_------_------").unwrap();
+        let mut node = PendingNode::new(table);
         let node = node.decide();
         assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
         let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
@@ -406,7 +408,7 @@ mod test {
         } else {
             unreachable!()
         };
-        let tables: Vec<Table> = new_nodes.iter().map(|node| node.table).collect();
+        let tables: Vec<MachineTable> = new_nodes.iter().map(|node| node.table).collect();
         println!("{:?}", tables);
         assert_eq!(tables.len(), 12);
         assert_contains(&tables, "1RB0RA_1LA---_------_------_------");
@@ -427,16 +429,16 @@ mod test {
 
     #[test]
     fn test_decide_node_empty_transition4() {
-        let table = Table::from_str("1RB1RB_1LA---_------_------_------").unwrap();
-        let mut node = UndecidedNode::new(table);
+        let table = MachineTable::from_str("1RB1RB_1LA---_------_------_------").unwrap();
+        let mut node = PendingNode::new(table);
         let node = node.decide();
         assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
     }
 
     #[test]
     fn test_decide_node_empty_transition3() {
-        let table = Table::from_str("1RB1RB_------_------_------_------").unwrap();
-        let mut node = UndecidedNode::new(table);
+        let table = MachineTable::from_str("1RB1RB_------_------_------_------").unwrap();
+        let mut node = PendingNode::new(table);
         let node = node.decide();
         assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
         let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
@@ -444,7 +446,7 @@ mod test {
         } else {
             unreachable!()
         };
-        let tables: Vec<Table> = new_nodes.iter().map(|node| node.table).collect();
+        let tables: Vec<MachineTable> = new_nodes.iter().map(|node| node.table).collect();
         println!("{:?}", tables);
         assert_eq!(tables.len(), 8);
         assert_contains(&tables, "1RB1RB_0LA---_------_------_------");
@@ -460,8 +462,8 @@ mod test {
 
     #[test]
     fn test_get_child_tables_2() {
-        let table = Table::from_str("1RB1LC_1RC1RB_1RD0LE_1LA1LD_---0LA").unwrap();
-        let tables: Vec<Table> =
+        let table = MachineTable::from_str("1RB1LC_1RC1RB_1RD0LE_1LA1LD_---0LA").unwrap();
+        let tables: Vec<MachineTable> =
             get_child_tables_for_transition(table, State::E, Symbol::Zero).collect();
 
         assert_contains(&tables, "1RB1LC_1RC1RB_1RD0LE_1LA1LD_0LZ0LA");
@@ -472,8 +474,8 @@ mod test {
 
     #[test]
     fn test_time_limit() {
-        let table = Table::from_str("1RB0LC_0LA0LD_1LA---_0RE0RD_0LD---").unwrap();
-        let mut node = UndecidedNode::new(table);
+        let table = MachineTable::from_str("1RB0LC_0LA0LD_1LA---_0RE0RD_0LD---").unwrap();
+        let mut node = PendingNode::new(table);
         let reason = node.run(Some(TIME_LIMIT), None);
         assert_eq!(reason, HaltReason::ExceededStepLimit);
         // runs for one less step than actual for probably silly reasons.
@@ -482,8 +484,8 @@ mod test {
 
     #[test]
     fn test_space_limit_right() {
-        let table = Table::from_str("1RA1RA_------_------_------_------").unwrap();
-        let mut node = UndecidedNode::new(table);
+        let table = MachineTable::from_str("1RA1RA_------_------_------_------").unwrap();
+        let mut node = PendingNode::new(table);
         let reason = node.run(None, Some(SPACE_LIMIT));
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);
         // runs for one less step than actual for probably silly reasons.
@@ -493,8 +495,8 @@ mod test {
 
     #[test]
     fn test_space_limit_left() {
-        let table = Table::from_str("1LA1LA_------_------_------_------").unwrap();
-        let mut node = UndecidedNode::new(table);
+        let table = MachineTable::from_str("1LA1LA_------_------_------_------").unwrap();
+        let mut node = PendingNode::new(table);
         let reason = node.run(None, Some(SPACE_LIMIT));
         assert_eq!(reason, HaltReason::ExceededSpaceLimit);
         // runs for one less step than actual for probably silly reasons.

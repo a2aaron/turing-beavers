@@ -6,8 +6,8 @@ use std::{
     time::Instant,
 };
 use turing_beavers::{
-    seed::UndecidedNode,
-    turing::{Action, Direction, State, Symbol, Table, TableStruct, Transition},
+    seed::PendingNode,
+    turing::{Action, Direction, MachineTable, MachineTableStruct, State, Symbol, Transition},
 };
 
 struct Header {
@@ -17,7 +17,11 @@ struct Header {
     lexiographically_sorted: bool,
 }
 
-fn get_machines(path: impl AsRef<Path>, num_machines: usize, seed: u64) -> io::Result<Vec<Table>> {
+fn get_machines(
+    path: impl AsRef<Path>,
+    num_machines: usize,
+    seed: u64,
+) -> io::Result<Vec<MachineTable>> {
     fn parse_transition(transition: [u8; 3]) -> io::Result<Action> {
         let (symbol, direction, state) = match transition {
             [0, 0, 0] => return Ok(None),
@@ -54,8 +58,8 @@ fn get_machines(path: impl AsRef<Path>, num_machines: usize, seed: u64) -> io::R
         Ok(action)
     }
 
-    fn parse_table(table: [u8; 30]) -> io::Result<Table> {
-        let table = TableStruct {
+    fn parse_table(table: [u8; 30]) -> io::Result<MachineTable> {
+        let table = MachineTableStruct {
             state_a_0: parse_transition(table[0..3].try_into().unwrap())?,
             state_a_1: parse_transition(table[3..6].try_into().unwrap())?,
             state_b_0: parse_transition(table[6..9].try_into().unwrap())?,
@@ -67,7 +71,7 @@ fn get_machines(path: impl AsRef<Path>, num_machines: usize, seed: u64) -> io::R
             state_e_0: parse_transition(table[24..27].try_into().unwrap())?,
             state_e_1: parse_transition(table[27..30].try_into().unwrap())?,
         };
-        Ok(Table::from(table))
+        Ok(MachineTable::from(table))
     }
 
     let undecided = File::open(path)?;
@@ -116,7 +120,7 @@ fn random_bench() {
                            // (source: https://rust-random.github.io/book/guide-seeding.html#a-simple-number)
 
     let tables = get_machines("undecided.bin", NUM_MACHINES, SEED).unwrap();
-    let nodes = tables.iter().map(|&table| UndecidedNode::new(table));
+    let nodes = tables.iter().map(|&table| PendingNode::new(table));
     println!("Deciding {} machines", NUM_MACHINES);
 
     let now = Instant::now();

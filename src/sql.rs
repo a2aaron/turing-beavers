@@ -8,7 +8,7 @@ use sqlx::{
 
 use crate::{
     seed::{DecidedNode, MachineDecision, STARTING_MACHINE},
-    turing::Table,
+    turing::MachineTable,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +66,7 @@ impl<'r> Decode<'r, Sqlite> for Decision {
     }
 }
 
-impl<'r> Encode<'r, Sqlite> for Table {
+impl<'r> Encode<'r, Sqlite> for MachineTable {
     fn encode_by_ref(
         &self,
         buf: &mut <Sqlite as sqlx::database::HasArguments<'r>>::ArgumentBuffer,
@@ -77,17 +77,17 @@ impl<'r> Encode<'r, Sqlite> for Table {
     }
 }
 
-impl<'r> Decode<'r, Sqlite> for Table {
+impl<'r> Decode<'r, Sqlite> for MachineTable {
     fn decode(
         value: <Sqlite as HasValueRef<'r>>::ValueRef,
     ) -> Result<Self, sqlx::error::BoxDynError> {
         let value = <&[u8] as Decode<Sqlite>>::decode(value)?;
-        let value = Table::try_from(value);
+        let value = MachineTable::try_from(value);
         Ok(value?)
     }
 }
 
-impl sqlx::Type<Sqlite> for Table {
+impl sqlx::Type<Sqlite> for MachineTable {
     fn type_info() -> <Sqlite as sqlx::Database>::TypeInfo {
         <&[u8]>::type_info()
     }
@@ -98,7 +98,7 @@ pub type RowID = u32;
 #[derive(sqlx::FromRow, Clone, Copy, PartialEq, Eq)]
 pub struct ResultRow {
     pub results_id: RowID,
-    pub machine: Table,
+    pub machine: MachineTable,
     pub decision: Option<Decision>,
 }
 
@@ -132,7 +132,7 @@ pub async fn submit_result(
     Ok(rows_processed)
 }
 
-pub async fn insert_row(conn: &mut SqliteConnection, table: Table) {
+pub async fn insert_row(conn: &mut SqliteConnection, table: MachineTable) {
     let table: PackedTable = table.into();
     let query = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
         .bind(&table[..])
@@ -201,7 +201,7 @@ pub async fn create_tables(conn: &mut SqliteConnection) {
 pub async fn insert_initial_row(conn: &mut SqliteConnection) {
     // Try to insert the initial row. OR IGNORE is used here to not do the insert if we have already
     // decided the row.
-    let starting_table = Table::from_str(STARTING_MACHINE).unwrap();
+    let starting_table = MachineTable::from_str(STARTING_MACHINE).unwrap();
     let array: PackedTable = starting_table.into();
     sqlx::query("INSERT OR IGNORE INTO results (machine, decision) VALUES($1, NULL)")
         .bind(&array[..])
@@ -210,7 +210,7 @@ pub async fn insert_initial_row(conn: &mut SqliteConnection) {
         .unwrap();
 }
 
-pub async fn get_queue(conn: &mut SqliteConnection) -> Vec<Table> {
+pub async fn get_queue(conn: &mut SqliteConnection) -> Vec<MachineTable> {
     let tables = sqlx::query_scalar("SELECT machine FROM results WHERE decision IS NULL")
         .fetch_all(conn)
         .await
@@ -218,7 +218,7 @@ pub async fn get_queue(conn: &mut SqliteConnection) -> Vec<Table> {
 
     tables
         .into_iter()
-        .map(|t: Vec<u8>| Table::try_from(t.as_slice()).unwrap())
+        .map(|t: Vec<u8>| MachineTable::try_from(t.as_slice()).unwrap())
         .collect()
 }
 

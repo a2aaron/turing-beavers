@@ -12,7 +12,7 @@ use smol::{
 };
 use turing_beavers::{
     sql::{create_tables, Decision, RowID},
-    turing::Table,
+    turing::MachineTable,
 };
 #[derive(Parser, Debug)]
 struct Args {
@@ -30,7 +30,7 @@ struct Args {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RowObject {
     results_id: RowID,
-    machine: Table,
+    machine: MachineTable,
     decision: Option<DecisionWithStats>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +98,7 @@ async fn get_rows(
     #[derive(FromRow)]
     struct Row {
         results_id: RowID,
-        machine: Table,
+        machine: MachineTable,
         decision: Option<Decision>,
         steps: Option<u32>,
         space: Option<u32>,
@@ -145,16 +145,16 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
     let mut rows = get_rows(&mut input_conn).await;
 
     let mut decided_conn = create_output_file(&args.out_path.join("decided.sqlite")).await;
-    let mut undecided_conns: Vec<SqliteConnection> = stream::iter(0..args.num_split)
+    let mut pending_conns: Vec<SqliteConnection> = stream::iter(0..args.num_split)
         .then(|i| {
-            let path = args.out_path.join(format!("undecided_{}.sqlite", i));
+            let path = args.out_path.join(format!("pending_{}.sqlite", i));
             create_output_file(path)
         })
         .collect()
         .await;
 
     let mut total_i = 0;
-    let mut undecided_i = 0;
+    let mut pending_i = 0;
     let mut now = Instant::now();
     while let Some(row) = rows.try_next().await? {
         if now.elapsed().as_secs() >= 1 {
@@ -170,15 +170,15 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
         if row.decision.is_some() {
             insert_row(&row, &mut decided_conn).await?;
         } else {
-            insert_row(&row, &mut undecided_conns[undecided_i]).await?;
-            undecided_i = (undecided_i + 1) % undecided_conns.len();
+            insert_row(&row, &mut pending_conns[pending_i]).await?;
+            pending_i = (pending_i + 1) % pending_conns.len();
         }
         total_i += 1;
     }
 
     // Close the connections explicitly so that sqlite will clean up the wal and shm files.
     decided_conn.close().await.unwrap();
-    for conn in undecided_conns {
+    for conn in pending_conns {
         conn.close().await.unwrap();
     }
     println!("{}/{} (100%)", row_count, row_count,);
