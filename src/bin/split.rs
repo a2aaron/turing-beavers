@@ -29,7 +29,7 @@ struct Args {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RowObject {
-    id: RowID,
+    results_id: RowID,
     machine: Table,
     decision: Option<DecisionWithStats>,
 }
@@ -54,16 +54,17 @@ async fn create_output_file(path: impl AsRef<Path>) -> SqliteConnection {
 
 async fn insert_row(row: &RowObject, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
     if let Some(decision) = row.decision {
-        let result = sqlx::query("INSERT INTO results (id, machine, decision) VALUES($1, $2, $3)")
-            .bind(row.id)
-            .bind(row.machine)
-            .bind(decision.decision)
-            .execute(&mut *conn)
-            .await?;
+        let result =
+            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, $3)")
+                .bind(row.results_id)
+                .bind(row.machine)
+                .bind(decision.decision)
+                .execute(&mut *conn)
+                .await?;
         assert_eq!(result.rows_affected(), 1);
 
-        let result = sqlx::query("INSERT INTO stats (id, steps, space) VALUES($1, $2, $3)")
-            .bind(row.id)
+        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
+            .bind(row.results_id)
             .bind(decision.steps)
             .bind(decision.space)
             .execute(&mut *conn)
@@ -71,8 +72,8 @@ async fn insert_row(row: &RowObject, conn: &mut SqliteConnection) -> Result<(), 
         assert_eq!(result.rows_affected(), 1);
     } else {
         let result =
-            sqlx::query("INSERT INTO results (id, machine, decision) VALUES($1, $2, NULL)")
-                .bind(row.id)
+            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, NULL)")
+                .bind(row.results_id)
                 .bind(row.machine)
                 .execute(&mut *conn)
                 .await?;
@@ -84,7 +85,7 @@ async fn insert_row(row: &RowObject, conn: &mut SqliteConnection) -> Result<(), 
 async fn get_row_count(conn: &mut SqliteConnection) -> u32 {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM results
-             LEFT JOIN stats USING (id)",
+             LEFT JOIN stats USING (results_id)",
     )
     .fetch_one(&mut *conn)
     .await
@@ -96,7 +97,7 @@ async fn get_rows(
 ) -> impl Stream<Item = Result<RowObject, sqlx::Error>> + '_ {
     #[derive(FromRow)]
     struct Row {
-        id: RowID,
+        results_id: RowID,
         machine: Table,
         decision: Option<Decision>,
         steps: Option<u32>,
@@ -104,8 +105,8 @@ async fn get_rows(
     }
 
     let result_rows = sqlx::query_as::<_, Row>(
-        "SELECT id, machine, decision, steps, space FROM results
-             LEFT JOIN stats USING (id)",
+        "SELECT results_id, machine, decision, steps, space FROM results
+             LEFT JOIN stats USING (results_id)",
     )
     .fetch(&mut (*conn));
 
@@ -123,7 +124,7 @@ async fn get_rows(
         };
 
         Ok(RowObject {
-            id: row.id,
+            results_id: row.results_id,
             machine: row.machine,
             decision,
         })

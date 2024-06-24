@@ -97,14 +97,14 @@ pub type RowID = u32;
 
 #[derive(sqlx::FromRow, Clone, Copy, PartialEq, Eq)]
 pub struct ResultRow {
-    pub id: RowID,
+    pub results_id: RowID,
     pub machine: Table,
     pub decision: Option<Decision>,
 }
 
 #[derive(sqlx::FromRow, Clone, Copy, PartialEq, Eq)]
 pub struct StatsRow {
-    pub id: RowID,
+    pub results_id: RowID,
     pub steps: u32,
     pub space: u32,
 }
@@ -153,18 +153,18 @@ pub async fn update_row(conn: &mut SqliteConnection, node: &DecidedNode) {
         .unwrap();
     assert_eq!(result.rows_affected(), 1);
 
-    // Insert stats--first grab the id
-    let id: i64 = sqlx::query_scalar("SELECT id FROM results WHERE machine = $1")
+    // Insert stats--first grab the results_id
+    let results_id: RowID = sqlx::query_scalar("SELECT results_id FROM results WHERE machine = $1")
         .bind(&table[..])
         .fetch_one(&mut *conn)
         .await
         .unwrap();
 
     // Now actually insert the stats
-    let result = sqlx::query("INSERT INTO stats (id, steps, space) VALUES($1, $2, $3)")
-        .bind(id)
-        .bind(node.stats.get_total_steps() as i64)
-        .bind(node.stats.space_used() as i64)
+    let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
+        .bind(results_id)
+        .bind(node.stats.get_total_steps() as u32)
+        .bind(node.stats.space_used() as u32)
         .execute(conn)
         .await
         .unwrap();
@@ -174,7 +174,7 @@ pub async fn update_row(conn: &mut SqliteConnection, node: &DecidedNode) {
 pub async fn create_tables(conn: &mut SqliteConnection) {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS results (
-        id       INTEGER NOT NULL PRIMARY KEY,
+        results_id       INTEGER NOT NULL PRIMARY KEY,
         machine  BLOB    NOT NULL UNIQUE,
         decision INTEGER     NULL)",
     )
@@ -184,7 +184,7 @@ pub async fn create_tables(conn: &mut SqliteConnection) {
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS stats (
-            id    INTEGER NOT NULL REFERENCES results(id),
+            results_id    INTEGER NOT NULL REFERENCES results(results_id),
             steps INTEGER NOT NULL,
             space INTEGER NOT NULL)",
     )
