@@ -372,6 +372,93 @@ mod test {
     }
 
     #[test]
+    fn test_decide_node_empty_transition() {
+        let table = Table::from_str("1RB---_------_------_------_------").unwrap();
+        let mut node = UndecidedNode::new(table);
+        let node = node.decide();
+        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
+        let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
+            machines
+        } else {
+            unreachable!()
+        };
+        let tables: Vec<Table> = new_nodes.iter().map(|node| node.table).collect();
+        println!("{:?}", tables);
+        assert_eq!(tables.len(), 8);
+        assert_contains(&tables, "1RB---_0LA---_------_------_------");
+        assert_contains(&tables, "1RB---_0RA---_------_------_------");
+        assert_contains(&tables, "1RB---_1LA---_------_------_------");
+        assert_contains(&tables, "1RB---_1RA---_------_------_------");
+        assert_contains(&tables, "1RB---_0LB---_------_------_------");
+        assert_contains(&tables, "1RB---_0RB---_------_------_------");
+        assert_contains(&tables, "1RB---_1LB---_------_------_------");
+        assert_contains(&tables, "1RB---_1RB---_------_------_------");
+    }
+
+    #[test]
+    fn test_decide_node_empty_transition2() {
+        let table = Table::from_str("1RB---_1LA---_------_------_------").unwrap();
+        let mut node = UndecidedNode::new(table);
+        let node = node.decide();
+        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
+        let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
+            machines
+        } else {
+            unreachable!()
+        };
+        let tables: Vec<Table> = new_nodes.iter().map(|node| node.table).collect();
+        println!("{:?}", tables);
+        assert_eq!(tables.len(), 12);
+        assert_contains(&tables, "1RB0RA_1LA---_------_------_------");
+        assert_contains(&tables, "1RB0LA_1LA---_------_------_------");
+        assert_contains(&tables, "1RB1RA_1LA---_------_------_------");
+        assert_contains(&tables, "1RB1LA_1LA---_------_------_------");
+
+        assert_contains(&tables, "1RB0RB_1LA---_------_------_------");
+        assert_contains(&tables, "1RB0LB_1LA---_------_------_------");
+        assert_contains(&tables, "1RB1RB_1LA---_------_------_------");
+        assert_contains(&tables, "1RB1LB_1LA---_------_------_------");
+
+        assert_contains(&tables, "1RB0RC_1LA---_------_------_------");
+        assert_contains(&tables, "1RB0LC_1LA---_------_------_------");
+        assert_contains(&tables, "1RB1RC_1LA---_------_------_------");
+        assert_contains(&tables, "1RB1LC_1LA---_------_------_------");
+    }
+
+    #[test]
+    fn test_decide_node_empty_transition4() {
+        let table = Table::from_str("1RB1RB_1LA---_------_------_------").unwrap();
+        let mut node = UndecidedNode::new(table);
+        let node = node.decide();
+        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
+    }
+
+    #[test]
+    fn test_decide_node_empty_transition3() {
+        let table = Table::from_str("1RB1RB_------_------_------_------").unwrap();
+        let mut node = UndecidedNode::new(table);
+        let node = node.decide();
+        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
+        let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
+            machines
+        } else {
+            unreachable!()
+        };
+        let tables: Vec<Table> = new_nodes.iter().map(|node| node.table).collect();
+        println!("{:?}", tables);
+        assert_eq!(tables.len(), 8);
+        assert_contains(&tables, "1RB1RB_0LA---_------_------_------");
+        assert_contains(&tables, "1RB1RB_0RA---_------_------_------");
+        assert_contains(&tables, "1RB1RB_1LA---_------_------_------");
+        assert_contains(&tables, "1RB1RB_1RA---_------_------_------");
+
+        assert_contains(&tables, "1RB1RB_0LB---_------_------_------");
+        assert_contains(&tables, "1RB1RB_0RB---_------_------_------");
+        assert_contains(&tables, "1RB1RB_1LB---_------_------_------");
+        assert_contains(&tables, "1RB1RB_1RB---_------_------_------");
+    }
+
+    #[test]
     fn test_get_child_tables_2() {
         let table = Table::from_str("1RB1LC_1RC1RB_1RD0LE_1LA1LD_---0LA").unwrap();
         let tables: Vec<Table> =

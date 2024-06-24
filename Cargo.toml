@@ -1,3 +1,4 @@
+workspace = { members = ["sqlite-turing"] }
 [package]
 name = "turing-beavers"
 version = "0.1.0"
