@@ -109,7 +109,7 @@ pub struct StatsRow {
     pub space: u32,
 }
 
-type PackedTable = [u8; 7];
+pub type PackedTable = [u8; 7];
 
 pub async fn submit_result(
     conn: &mut SqliteConnection,
