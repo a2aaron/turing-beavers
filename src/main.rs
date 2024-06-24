@@ -18,10 +18,8 @@ use turing_beavers::{
         add_work_to_queue, with_starting_queue, DecidedNode, MachineDecision, RunStats,
         UndecidedNode,
     },
-    sql::{
-        create_tables, get_connection, get_queue, insert_initial_row, run_command, submit_result,
-    },
-    turing::TableArray,
+    sql::{create_tables, get_connection, get_queue, insert_initial_row, submit_result},
+    turing::{Table, TableArray},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -276,7 +274,7 @@ impl SharedThreadState {
     }
 }
 
-fn init_connection(file: &str) -> (SqliteConnection, Vec<TableArray>) {
+fn init_connection(file: &str) -> (SqliteConnection, Vec<Table>) {
     let mut conn: SqliteConnection = block_on(get_connection(file));
     block_on(create_tables(&mut conn));
 
@@ -350,6 +348,9 @@ struct Args {
     /// Number of worker threads to run with.
     #[arg(short, long)]
     workers: usize,
+    /// If present, sort so that tables with the Halted state are processed first
+    #[arg(long, action)]
+    sort_halted_first: bool,
 }
 
 fn main() {
@@ -358,6 +359,16 @@ fn main() {
     let (conn, starting_queue) =
         init_connection("/Users/aaron/dev/Rust/turing-beavers/results.sqlite");
     println!("Starting queue size: {}", starting_queue.len());
+
+    let starting_queue = if args.sort_halted_first {
+        let (mut halts, mut not_halts): (Vec<Table>, Vec<Table>) = starting_queue
+            .iter()
+            .partition(|table| table.contains_halt_transition());
+        halts.append(&mut not_halts);
+        halts
+    } else {
+        starting_queue
+    };
 
     let state = Arc::new(SharedThreadState::new());
     install_ctrlc_handler(state.clone());

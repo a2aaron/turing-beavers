@@ -528,6 +528,18 @@ impl TableArray {
             + d_visited as usize
             + e_visited as usize
     }
+
+    pub fn contains_halt_transition(&self) -> bool {
+        self.0.iter().any(|action| {
+            matches!(
+                action,
+                Some(Transition::L0Z)
+                    | Some(Transition::L1Z)
+                    | Some(Transition::R0Z)
+                    | Some(Transition::R1Z)
+            )
+        })
+    }
 }
 
 impl From<TableArray> for [u8; 7] {
