@@ -13,6 +13,10 @@ use crate::{
     turing::MachineTable,
 };
 
+/// Convience type
+pub type SqlResult<T> = Result<T, sqlx::Error>;
+pub type SqlQueryResult = SqlResult<sqlx::sqlite::SqliteQueryResult>;
+
 /// The type of "results_id" column
 pub type RowID = u32;
 
@@ -230,12 +234,12 @@ pub async fn submit_result(
     let decision = &node.decision;
 
     let mut rows_processed = 1;
-    update_pending_row(conn, node).await;
+    update_pending_row(conn, node).await?;
     match decision {
         MachineDecision::EmptyTransition(new_nodes) => {
             rows_processed += new_nodes.len();
             for node in new_nodes {
-                insert_pending_row(conn, node.table).await;
+                insert_pending_row(conn, node.table).await?;
             }
         }
         _ => (),
@@ -244,17 +248,18 @@ pub async fn submit_result(
 }
 
 /// Insert a [MachineTable] as a pending result row
-async fn insert_pending_row(conn: &mut SqliteConnection, table: MachineTable) {
+async fn insert_pending_row(conn: &mut SqliteConnection, table: MachineTable) -> SqlQueryResult {
     let table: PackedTable = table.into();
-    let query = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
+    let result = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
         .bind(&table[..])
-        .execute(conn);
-    let result = query.await.unwrap();
+        .execute(conn)
+        .await?;
     assert_eq!(result.rows_affected(), 1);
+    Ok(result)
 }
 
 /// Update a pending result row into a decided row, including stats
-async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) {
+async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) -> SqlResult<()> {
     let decision = Decision::from(&node.decision) as u8;
     let table: PackedTable = node.table.into();
     // Update decision row
@@ -262,16 +267,14 @@ async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) {
         .bind(&table[..])
         .bind(decision)
         .execute(&mut *conn)
-        .await
-        .unwrap();
+        .await?;
     assert_eq!(result.rows_affected(), 1);
 
     // Insert stats--first grab the results_id
     let results_id: RowID = sqlx::query_scalar("SELECT results_id FROM results WHERE machine = $1")
         .bind(&table[..])
         .fetch_one(&mut *conn)
-        .await
-        .unwrap();
+        .await?;
 
     // Now actually insert the stats
     let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
@@ -279,13 +282,13 @@ async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) {
         .bind(node.stats.get_total_steps() as u32)
         .bind(node.stats.space_used() as u32)
         .execute(conn)
-        .await
-        .unwrap();
+        .await?;
     assert_eq!(result.rows_affected(), 1);
+    Ok(())
 }
 
 /// Create the tables for the database if they do not already exist.
-pub async fn create_tables(conn: &mut SqliteConnection) {
+pub async fn create_tables(conn: &mut SqliteConnection) -> SqlResult<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS results (
         results_id       INTEGER NOT NULL PRIMARY KEY,
@@ -293,8 +296,7 @@ pub async fn create_tables(conn: &mut SqliteConnection) {
         decision INTEGER     NULL)",
     )
     .execute(&mut *conn)
-    .await
-    .unwrap();
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS stats (
@@ -303,12 +305,14 @@ pub async fn create_tables(conn: &mut SqliteConnection) {
             space INTEGER NOT NULL)",
     )
     .execute(&mut *conn)
-    .await
-    .unwrap();
+    .await?;
+    Ok(())
 }
 
 /// Insert the initial row, if it does not already exist. This is used to set up the database for the first time.
-pub async fn insert_initial_row(conn: &mut SqliteConnection) {
+pub async fn insert_initial_row(
+    conn: &mut SqliteConnection,
+) -> Result<SqliteQueryResult, sqlx::Error> {
     // Try to insert the initial row. OR IGNORE is used here to not do the insert if we have already
     // decided the row.
     let starting_table = MachineTable::from_str(STARTING_MACHINE).unwrap();
@@ -317,25 +321,26 @@ pub async fn insert_initial_row(conn: &mut SqliteConnection) {
         .bind(&array[..])
         .execute(conn)
         .await
-        .unwrap();
 }
 
 /// Retrieve all of the [MachineTable]s which are pending
-pub async fn get_pending_queue(conn: &mut SqliteConnection) -> Vec<MachineTable> {
+pub async fn get_pending_queue(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<MachineTable>, sqlx::Error> {
     let tables = sqlx::query_scalar("SELECT machine FROM results WHERE decision IS NULL")
         .fetch_all(conn)
-        .await
-        .unwrap();
+        .await?;
 
-    tables
+    let pending_queue = tables
         .into_iter()
         .map(|t: Vec<u8>| MachineTable::try_from(t.as_slice()).unwrap())
-        .collect()
+        .collect();
+    Ok(pending_queue)
 }
 
 /// Convience function to run a command.
-pub async fn run_command(conn: &mut SqliteConnection, sql: &str) -> SqliteQueryResult {
-    sqlx::query(sql).execute(conn).await.unwrap()
+pub async fn run_command(conn: &mut SqliteConnection, sql: &str) -> SqlQueryResult {
+    sqlx::query(sql).execute(conn).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,18 +352,20 @@ pub enum ConnectionMode {
 }
 /// Initialize a connection.
 /// This also sets the synchronous and journal_mode PRAGMAs to make writes faster.
-pub async fn get_connection(file: impl AsRef<Path>, mode: ConnectionMode) -> SqliteConnection {
+pub async fn get_connection(
+    file: impl AsRef<Path>,
+    mode: ConnectionMode,
+) -> SqlResult<SqliteConnection> {
     let mut conn = SqliteConnectOptions::new()
         .filename(file)
         .create_if_missing(mode == ConnectionMode::Write)
         .read_only(mode == ConnectionMode::ReadOnly)
         .connect()
-        .await
-        .unwrap();
+        .await?;
 
     // PRAGMAs set here are from https://phiresky.github.io/blog/2020/sqlite-performance-tuning/
     // This is to allow faster writes to the database.
-    run_command(&mut conn, "PRAGMA synchronous = normal").await;
-    run_command(&mut conn, "PRAGMA journal_mode = WAL;").await;
-    conn
+    run_command(&mut conn, "PRAGMA synchronous = normal").await?;
+    run_command(&mut conn, "PRAGMA journal_mode = WAL;").await?;
+    Ok(conn)
 }

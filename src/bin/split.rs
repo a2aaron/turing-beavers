@@ -26,8 +26,8 @@ struct Args {
 
 async fn create_output_file(path: impl AsRef<Path>) -> SqliteConnection {
     println!("Creating {:?}", path.as_ref());
-    let mut conn = get_connection(path, ConnectionMode::Write).await;
-    create_tables(&mut conn).await;
+    let mut conn = get_connection(path, ConnectionMode::Write).await.unwrap();
+    create_tables(&mut conn).await.unwrap();
     conn
 }
 
@@ -43,7 +43,9 @@ async fn get_row_count(conn: &mut SqliteConnection) -> u32 {
 
 async fn run(args: Args) -> Result<(), sqlx::Error> {
     println!("Getting rows...");
-    let mut input_conn = get_connection(args.in_path, ConnectionMode::ReadOnly).await;
+    let mut input_conn = get_connection(args.in_path, ConnectionMode::ReadOnly)
+        .await
+        .unwrap();
     let row_count = get_row_count(&mut input_conn).await;
     println!("Splitting {:?} rows...", row_count);
     let mut rows = ResultObject::get_rows(&mut input_conn).await;

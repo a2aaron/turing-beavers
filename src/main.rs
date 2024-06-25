@@ -221,7 +221,7 @@ async fn run_processor(
             break;
         }
     }
-    let remaining_queue_length = get_pending_queue(&mut conn).await.len();
+    let remaining_queue_length = get_pending_queue(&mut conn).await.unwrap().len();
     println!(
         "Processor -- exiting with {} queued machines written to database",
         remaining_queue_length
@@ -281,13 +281,13 @@ impl SharedThreadState {
 }
 
 async fn init_connection(file: impl AsRef<Path>) -> (SqliteConnection, Vec<MachineTable>) {
-    let mut conn: SqliteConnection = get_connection(file, ConnectionMode::Write).await;
-    create_tables(&mut conn).await;
+    let mut conn: SqliteConnection = get_connection(file, ConnectionMode::Write).await.unwrap();
+    create_tables(&mut conn).await.unwrap();
 
     // set up initial queue
-    insert_initial_row(&mut conn).await;
+    insert_initial_row(&mut conn).await.unwrap();
 
-    let starting_queue = get_pending_queue(&mut conn).await;
+    let starting_queue = get_pending_queue(&mut conn).await.unwrap();
     (conn, starting_queue)
 }
 
