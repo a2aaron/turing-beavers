@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::Parser;
-use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection, SqliteConnection};
+use sqlx::{Connection, SqliteConnection};
 
 use smol::{
     block_on,

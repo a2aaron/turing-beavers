@@ -1,6 +1,7 @@
 #![feature(let_chains)]
 
 use std::{
+    path::Path,
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
@@ -176,7 +177,7 @@ fn run_stats_printer(
     }
 }
 
-fn run_processor(
+async fn run_processor(
     mut conn: SqliteConnection,
     state: Arc<SharedThreadState>,
     send_stats: Sender<ProcessorStats>,
@@ -185,7 +186,7 @@ fn run_processor(
 ) {
     let mut sender_closed = false;
     while let Ok(node) = recv_decided.recv() {
-        let rows_written = block_on(submit_result(&mut conn, &node)).unwrap();
+        let rows_written = submit_result(&mut conn, &node).await.unwrap();
         match node.decision {
             MachineDecision::EmptyTransition(nodes) => {
                 if !sender_closed && let Err(_) = add_work_to_queue(&send_pending, nodes) {
@@ -220,11 +221,14 @@ fn run_processor(
             break;
         }
     }
+    let remaining_queue_length = get_pending_queue(&mut conn).await.len();
     println!(
         "Processor -- exiting with {} queued machines written to database",
-        block_on(get_pending_queue(&mut conn)).len()
+        remaining_queue_length
     );
-    block_on(conn.close()).expect("Processor -- Could not close database connection!");
+    conn.close()
+        .await
+        .expect("Processor -- Could not close database connection!");
 }
 
 fn run_decider_worker(
@@ -276,14 +280,14 @@ impl SharedThreadState {
     }
 }
 
-fn init_connection(file: &str) -> (SqliteConnection, Vec<MachineTable>) {
-    let mut conn: SqliteConnection = block_on(get_connection(file, ConnectionMode::Write));
-    block_on(create_tables(&mut conn));
+async fn init_connection(file: impl AsRef<Path>) -> (SqliteConnection, Vec<MachineTable>) {
+    let mut conn: SqliteConnection = get_connection(file, ConnectionMode::Write).await;
+    create_tables(&mut conn).await;
 
     // set up initial queue
-    block_on(insert_initial_row(&mut conn));
+    insert_initial_row(&mut conn).await;
 
-    let starting_queue = block_on(get_pending_queue(&mut conn));
+    let starting_queue = get_pending_queue(&mut conn).await;
     (conn, starting_queue)
 }
 
@@ -311,13 +315,13 @@ fn start_threads(
         .spawn({
             let state = state.clone();
             move || {
-                run_processor(
+                block_on(run_processor(
                     conn,
                     state.clone(),
                     send_stats_processor,
                     send_pending,
                     recv_decided,
-                )
+                ))
             }
         })
         .unwrap();
@@ -358,8 +362,8 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let (conn, starting_queue) =
-        init_connection("/Users/aaron/dev/Rust/turing-beavers/results.sqlite");
+    let file = "/Users/aaron/dev/Rust/turing-beavers/results.sqlite";
+    let (conn, starting_queue) = block_on(init_connection(file));
     println!("Starting queue size: {}", starting_queue.len());
 
     let starting_queue = if args.sort_halted_first {
