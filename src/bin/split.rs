@@ -4,16 +4,13 @@ use std::{
 };
 
 use clap::Parser;
-use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection, FromRow, SqliteConnection};
+use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection, SqliteConnection};
 
 use smol::{
     block_on,
-    stream::{self, Stream, StreamExt},
+    stream::{self, StreamExt},
 };
-use turing_beavers::{
-    sql::{create_tables, Decision, RowID},
-    turing::MachineTable,
-};
+use turing_beavers::sql::{create_tables, get_connection, ConnectionMode, ResultObject};
 #[derive(Parser, Debug)]
 struct Args {
     /// Database file to split
@@ -27,59 +24,11 @@ struct Args {
     num_split: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RowObject {
-    results_id: RowID,
-    machine: MachineTable,
-    decision: Option<DecisionWithStats>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DecisionWithStats {
-    decision: Decision,
-    steps: u32,
-    space: u32,
-}
-
 async fn create_output_file(path: impl AsRef<Path>) -> SqliteConnection {
     println!("Creating {:?}", path.as_ref());
-    let mut conn = SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true)
-        .connect()
-        .await
-        .unwrap();
+    let mut conn = get_connection(path, ConnectionMode::Write).await;
     create_tables(&mut conn).await;
     conn
-}
-
-async fn insert_row(row: &RowObject, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
-    if let Some(decision) = row.decision {
-        let result =
-            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, $3)")
-                .bind(row.results_id)
-                .bind(row.machine)
-                .bind(decision.decision)
-                .execute(&mut *conn)
-                .await?;
-        assert_eq!(result.rows_affected(), 1);
-
-        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
-            .bind(row.results_id)
-            .bind(decision.steps)
-            .bind(decision.space)
-            .execute(&mut *conn)
-            .await?;
-        assert_eq!(result.rows_affected(), 1);
-    } else {
-        let result =
-            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, NULL)")
-                .bind(row.results_id)
-                .bind(row.machine)
-                .execute(&mut *conn)
-                .await?;
-        assert_eq!(result.rows_affected(), 1);
-    }
-    Ok(())
 }
 
 async fn get_row_count(conn: &mut SqliteConnection) -> u32 {
@@ -92,57 +41,12 @@ async fn get_row_count(conn: &mut SqliteConnection) -> u32 {
     .unwrap()
 }
 
-async fn get_rows(
-    conn: &mut SqliteConnection,
-) -> impl Stream<Item = Result<RowObject, sqlx::Error>> + '_ {
-    #[derive(FromRow)]
-    struct Row {
-        results_id: RowID,
-        machine: MachineTable,
-        decision: Option<Decision>,
-        steps: Option<u32>,
-        space: Option<u32>,
-    }
-
-    let result_rows = sqlx::query_as::<_, Row>(
-        "SELECT results_id, machine, decision, steps, space FROM results
-             LEFT JOIN stats USING (results_id)",
-    )
-    .fetch(&mut (*conn));
-
-    result_rows.map(|result| {
-        let row = result?;
-        let decision = if let Some(decision) = row.decision {
-            Some(DecisionWithStats {
-                decision,
-                // These unwraps are safe because the stats row is present if and only if there is a decision
-                steps: row.steps.unwrap(),
-                space: row.space.unwrap(),
-            })
-        } else {
-            None
-        };
-
-        Ok(RowObject {
-            results_id: row.results_id,
-            machine: row.machine,
-            decision,
-        })
-    })
-}
-
 async fn run(args: Args) -> Result<(), sqlx::Error> {
     println!("Getting rows...");
-    let mut input_conn = SqliteConnectOptions::new()
-        .filename(args.in_path.clone())
-        .create_if_missing(false)
-        .read_only(true)
-        .connect()
-        .await
-        .unwrap();
+    let mut input_conn = get_connection(args.in_path, ConnectionMode::ReadOnly).await;
     let row_count = get_row_count(&mut input_conn).await;
     println!("Splitting {:?} rows...", row_count);
-    let mut rows = get_rows(&mut input_conn).await;
+    let mut rows = ResultObject::get_rows(&mut input_conn).await;
 
     let mut decided_conn = create_output_file(&args.out_path.join("decided.sqlite")).await;
     let mut pending_conns: Vec<SqliteConnection> = stream::iter(0..args.num_split)
@@ -168,9 +72,9 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
         }
 
         if row.decision.is_some() {
-            insert_row(&row, &mut decided_conn).await?;
+            row.insert(&mut decided_conn).await?;
         } else {
-            insert_row(&row, &mut pending_conns[pending_i]).await?;
+            row.insert(&mut pending_conns[pending_i]).await?;
             pending_i = (pending_i + 1) % pending_conns.len();
         }
         total_i += 1;

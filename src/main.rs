@@ -17,7 +17,10 @@ use turing_beavers::{
     seed::{
         add_work_to_queue, with_starting_queue, DecidedNode, MachineDecision, PendingNode, RunStats,
     },
-    sql::{create_tables, get_connection, get_queue, insert_initial_row, submit_result},
+    sql::{
+        create_tables, get_connection, get_pending_queue, insert_initial_row, submit_result,
+        ConnectionMode,
+    },
     turing::{MachineTable, MachineTableArray},
 };
 
@@ -219,7 +222,7 @@ fn run_processor(
     }
     println!(
         "Processor -- exiting with {} queued machines written to database",
-        block_on(get_queue(&mut conn)).len()
+        block_on(get_pending_queue(&mut conn)).len()
     );
     block_on(conn.close()).expect("Processor -- Could not close database connection!");
 }
@@ -274,13 +277,13 @@ impl SharedThreadState {
 }
 
 fn init_connection(file: &str) -> (SqliteConnection, Vec<MachineTable>) {
-    let mut conn: SqliteConnection = block_on(get_connection(file));
+    let mut conn: SqliteConnection = block_on(get_connection(file, ConnectionMode::Write));
     block_on(create_tables(&mut conn));
 
     // set up initial queue
     block_on(insert_initial_row(&mut conn));
 
-    let starting_queue = block_on(get_queue(&mut conn));
+    let starting_queue = block_on(get_pending_queue(&mut conn));
     (conn, starting_queue)
 }
 
