@@ -5,7 +5,7 @@ use sqlx::{
     database::HasValueRef,
     prelude::FromRow,
     sqlite::{SqliteConnectOptions, SqliteQueryResult},
-    ConnectOptions, Database, Decode, Encode, Sqlite, SqliteConnection,
+    Acquire, ConnectOptions, Database, Decode, Encode, Sqlite, SqliteConnection,
 };
 
 use crate::{
@@ -144,35 +144,46 @@ impl ResultObject {
     /// Insert the entire ResultObject into the database. This will insert into the result
     /// as well as the stats table if decision is present.
     pub async fn insert(&self, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+        let mut txn = conn.begin().await?;
         if let Some(decision) = self.decision {
-            let result = sqlx::query(
-                "INSERT INTO results (results_id, machine, decision) VALUES($1, $2, $3)",
-            )
-            .bind(self.results_id)
-            .bind(self.machine)
-            .bind(decision.decision)
-            .execute(&mut *conn)
-            .await?;
-            assert_eq!(result.rows_affected(), 1);
-
-            let result =
-                sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
-                    .bind(self.results_id)
-                    .bind(decision.steps)
-                    .bind(decision.space)
-                    .execute(&mut *conn)
-                    .await?;
-            assert_eq!(result.rows_affected(), 1);
+            self.insert_decided(decision, &mut txn).await?;
         } else {
-            let result = sqlx::query(
-                "INSERT INTO results (results_id, machine, decision) VALUES($1, $2, NULL)",
-            )
+            self.insert_pending(&mut txn).await?;
+        }
+        txn.commit().await
+    }
+
+    async fn insert_decided(
+        &self,
+        decision: DecisionWithStats,
+        conn: &mut SqliteConnection,
+    ) -> Result<(), sqlx::Error> {
+        let result =
+            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, $3)")
+                .bind(self.results_id)
+                .bind(self.machine)
+                .bind(decision.decision)
+                .execute(&mut *conn)
+                .await?;
+        assert_eq!(result.rows_affected(), 1);
+        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
             .bind(self.results_id)
-            .bind(self.machine)
+            .bind(decision.steps)
+            .bind(decision.space)
             .execute(&mut *conn)
             .await?;
-            assert_eq!(result.rows_affected(), 1);
-        }
+        assert_eq!(result.rows_affected(), 1);
+        Ok(())
+    }
+
+    async fn insert_pending(&self, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+        let result =
+            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, NULL)")
+                .bind(self.results_id)
+                .bind(self.machine)
+                .execute(&mut *conn)
+                .await?;
+        assert_eq!(result.rows_affected(), 1);
         Ok(())
     }
 
@@ -193,7 +204,7 @@ impl ResultObject {
             "SELECT results_id, machine, decision, steps, space FROM results
                  LEFT JOIN stats USING (results_id)",
         )
-        .fetch(&mut (*conn));
+        .fetch(&mut *conn);
 
         result_rows.map(|result| {
             let row = result?;
@@ -231,60 +242,68 @@ pub async fn submit_result(
     conn: &mut SqliteConnection,
     node: &DecidedNode,
 ) -> Result<usize, sqlx::Error> {
+    /// Insert a [MachineTable] as a pending result row
+    async fn insert_pending_row(
+        conn: &mut SqliteConnection,
+        table: MachineTable,
+    ) -> SqlQueryResult {
+        let table: PackedTable = table.into();
+        let result = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
+            .bind(&table[..])
+            .execute(conn)
+            .await?;
+        assert_eq!(result.rows_affected(), 1);
+        Ok(result)
+    }
+
+    /// Update a pending result row into a decided row, including stats
+    async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) -> SqlResult<()> {
+        let decision = Decision::from(&node.decision) as u8;
+        let table: PackedTable = node.table.into();
+        // Update decision row
+        let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
+            .bind(&table[..])
+            .bind(decision)
+            .execute(&mut *conn)
+            .await?;
+        assert_eq!(result.rows_affected(), 1);
+
+        // Insert stats--first grab the results_id
+        let results_id: RowID =
+            sqlx::query_scalar("SELECT results_id FROM results WHERE machine = $1")
+                .bind(&table[..])
+                .fetch_one(&mut *conn)
+                .await?;
+
+        // Now actually insert the stats
+        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
+            .bind(results_id)
+            .bind(node.stats.get_total_steps() as u32)
+            .bind(node.stats.space_used() as u32)
+            .execute(&mut *conn)
+            .await?;
+        assert_eq!(result.rows_affected(), 1);
+        Ok(())
+    }
+
+    let mut txn = conn.begin().await?;
+
     let decision = &node.decision;
 
     let mut rows_processed = 1;
-    update_pending_row(conn, node).await?;
+    update_pending_row(&mut txn, node).await?;
     match decision {
         MachineDecision::EmptyTransition(new_nodes) => {
             rows_processed += new_nodes.len();
             for node in new_nodes {
-                insert_pending_row(conn, node.table).await?;
+                insert_pending_row(&mut txn, node.table).await?;
             }
         }
         _ => (),
     }
+
+    txn.commit().await?;
     Ok(rows_processed)
-}
-
-/// Insert a [MachineTable] as a pending result row
-async fn insert_pending_row(conn: &mut SqliteConnection, table: MachineTable) -> SqlQueryResult {
-    let table: PackedTable = table.into();
-    let result = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
-        .bind(&table[..])
-        .execute(conn)
-        .await?;
-    assert_eq!(result.rows_affected(), 1);
-    Ok(result)
-}
-
-/// Update a pending result row into a decided row, including stats
-async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) -> SqlResult<()> {
-    let decision = Decision::from(&node.decision) as u8;
-    let table: PackedTable = node.table.into();
-    // Update decision row
-    let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
-        .bind(&table[..])
-        .bind(decision)
-        .execute(&mut *conn)
-        .await?;
-    assert_eq!(result.rows_affected(), 1);
-
-    // Insert stats--first grab the results_id
-    let results_id: RowID = sqlx::query_scalar("SELECT results_id FROM results WHERE machine = $1")
-        .bind(&table[..])
-        .fetch_one(&mut *conn)
-        .await?;
-
-    // Now actually insert the stats
-    let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
-        .bind(results_id)
-        .bind(node.stats.get_total_steps() as u32)
-        .bind(node.stats.space_used() as u32)
-        .execute(conn)
-        .await?;
-    assert_eq!(result.rows_affected(), 1);
-    Ok(())
 }
 
 /// Create the tables for the database if they do not already exist.
