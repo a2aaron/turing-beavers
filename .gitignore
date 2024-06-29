@@ -10,3 +10,4 @@ benchmark data.numbers
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+tarpaulin-report.html
