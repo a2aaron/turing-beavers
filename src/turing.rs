@@ -89,7 +89,7 @@ impl Display for State {
 ///  |   +------- state     (0 = A, 1 = B, 2 = C, 3 = D, 4 = E, 5 = Halt)
 ///  +----------- unused
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(Arbitrary))]
+#[cfg_attr(test, derive(Arbitrary, Hash))]
 #[repr(u8)]
 pub enum Transition {
     L0A = 0b000_000_0_0,
@@ -484,7 +484,7 @@ impl From<MachineTableArray> for MachineTableStruct {
 /// 0b0000 000 0
 ///        ^^^ ^ Symbol
 ///         +--- State (excluding Halt)
-#[cfg_attr(test, derive(Arbitrary))]
+#[cfg_attr(test, derive(Arbitrary, Hash))]
 pub struct MachineTableArray([Action; 10]);
 impl MachineTableArray {
     pub fn get(&self, state: State, symbol: Symbol) -> Action {

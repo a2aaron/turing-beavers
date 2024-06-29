@@ -242,50 +242,6 @@ pub async fn submit_result(
     conn: &mut SqliteConnection,
     node: &DecidedNode,
 ) -> Result<usize, sqlx::Error> {
-    /// Insert a [MachineTable] as a pending result row
-    async fn insert_pending_row(
-        conn: &mut SqliteConnection,
-        table: MachineTable,
-    ) -> SqlQueryResult {
-        let table: PackedTable = table.into();
-        let result = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
-            .bind(&table[..])
-            .execute(conn)
-            .await?;
-        assert_eq!(result.rows_affected(), 1);
-        Ok(result)
-    }
-
-    /// Update a pending result row into a decided row, including stats
-    async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) -> SqlResult<()> {
-        let decision = Decision::from(&node.decision) as u8;
-        let table: PackedTable = node.table.into();
-        // Update decision row
-        let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
-            .bind(&table[..])
-            .bind(decision)
-            .execute(&mut *conn)
-            .await?;
-        assert_eq!(result.rows_affected(), 1);
-
-        // Insert stats--first grab the results_id
-        let results_id: RowID =
-            sqlx::query_scalar("SELECT results_id FROM results WHERE machine = $1")
-                .bind(&table[..])
-                .fetch_one(&mut *conn)
-                .await?;
-
-        // Now actually insert the stats
-        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
-            .bind(results_id)
-            .bind(node.stats.get_total_steps() as u32)
-            .bind(node.stats.space_used() as u32)
-            .execute(&mut *conn)
-            .await?;
-        assert_eq!(result.rows_affected(), 1);
-        Ok(())
-    }
-
     let mut txn = conn.begin().await?;
 
     let decision = &node.decision;
@@ -304,6 +260,46 @@ pub async fn submit_result(
 
     txn.commit().await?;
     Ok(rows_processed)
+}
+
+/// Insert a [MachineTable] as a pending result row
+async fn insert_pending_row(conn: &mut SqliteConnection, table: MachineTable) -> SqlQueryResult {
+    let table: PackedTable = table.into();
+    let result = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
+        .bind(&table[..])
+        .execute(conn)
+        .await?;
+    assert_eq!(result.rows_affected(), 1);
+    Ok(result)
+}
+
+/// Update a pending result row into a decided row, including stats
+async fn update_pending_row(conn: &mut SqliteConnection, node: &DecidedNode) -> SqlResult<()> {
+    let decision = Decision::from(&node.decision) as u8;
+    let table: PackedTable = node.table.into();
+    // Update decision row
+    let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
+        .bind(&table[..])
+        .bind(decision)
+        .execute(&mut *conn)
+        .await?;
+    assert_eq!(result.rows_affected(), 1);
+
+    // Insert stats--first grab the results_id
+    let results_id: RowID = sqlx::query_scalar("SELECT results_id FROM results WHERE machine = $1")
+        .bind(&table[..])
+        .fetch_one(&mut *conn)
+        .await?;
+
+    // Now actually insert the stats
+    let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
+        .bind(results_id)
+        .bind(node.stats.get_total_steps() as u32)
+        .bind(node.stats.space_used() as u32)
+        .execute(&mut *conn)
+        .await?;
+    assert_eq!(result.rows_affected(), 1);
+    Ok(())
 }
 
 /// Create the tables for the database if they do not already exist.
@@ -387,4 +383,56 @@ pub async fn get_connection(
     run_command(&mut conn, "PRAGMA synchronous = normal").await?;
     run_command(&mut conn, "PRAGMA journal_mode = WAL;").await?;
     Ok(conn)
+}
+
+#[cfg(test)]
+mod test {
+    use std::{collections::HashSet, str::FromStr};
+
+    use smol::block_on;
+
+    use crate::{
+        seed::{MachineDecision, PendingNode, STARTING_MACHINE},
+        sql::{get_pending_queue, insert_pending_row},
+        turing::MachineTable,
+    };
+
+    use super::{create_tables, get_connection, submit_result, ConnectionMode};
+
+    #[test]
+    fn test_submit_results() {
+        block_on(async {
+            let mut conn = get_connection(":memory:", ConnectionMode::Write)
+                .await
+                .unwrap();
+            create_tables(&mut conn).await.unwrap();
+
+            let mut pending_node =
+                PendingNode::new(MachineTable::from_str(STARTING_MACHINE).unwrap());
+
+            insert_pending_row(&mut conn, pending_node.table)
+                .await
+                .unwrap();
+
+            let decided_node = pending_node.decide();
+
+            let rows_added = submit_result(&mut conn, &decided_node).await.unwrap();
+
+            let MachineDecision::EmptyTransition(empty_transitions) = decided_node.decision else {
+                unreachable!()
+            };
+
+            assert_eq!(empty_transitions.len() + 1, rows_added);
+
+            let expected_pending_queue: HashSet<MachineTable> =
+                empty_transitions.iter().map(|x| x.table).collect();
+            let actual_pending_queue: HashSet<MachineTable> = get_pending_queue(&mut conn)
+                .await
+                .unwrap()
+                .into_iter()
+                .collect();
+
+            assert_eq!(expected_pending_queue, actual_pending_queue);
+        })
+    }
 }
