@@ -1,7 +1,7 @@
 #![feature(let_chains)]
 
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
@@ -280,12 +280,25 @@ impl SharedThreadState {
     }
 }
 
-async fn init_connection(file: impl AsRef<Path>) -> (SqliteConnection, Vec<MachineTable>) {
-    let mut conn: SqliteConnection = get_connection(file, ConnectionMode::Write).await.unwrap();
-    create_tables(&mut conn).await.unwrap();
-
-    // set up initial queue
-    insert_initial_row(&mut conn).await.unwrap();
+async fn init_connection(
+    file: impl AsRef<Path>,
+    is_new_database: bool,
+) -> (SqliteConnection, Vec<MachineTable>) {
+    let mut conn = if is_new_database {
+        println!("Creating initial database file at {:?}", file.as_ref());
+        let mut conn: SqliteConnection = get_connection(file, ConnectionMode::WriteNew)
+            .await
+            .unwrap();
+        create_tables(&mut conn).await.unwrap();
+        // set up initial queue
+        insert_initial_row(&mut conn).await.unwrap();
+        conn
+    } else {
+        println!("Using existing database file at {:?}", file.as_ref());
+        get_connection(file, ConnectionMode::WriteExisting)
+            .await
+            .unwrap()
+    };
 
     let starting_queue = get_pending_queue(&mut conn).await.unwrap();
     (conn, starting_queue)
@@ -357,13 +370,18 @@ struct Args {
     /// If present, sort so that tables with the Halted state are processed first
     #[arg(long, action)]
     sort_halted_first: bool,
+    /// If present, run with initial conditions. Otherwise, assume that we are using an existing database.
+    #[arg(long, action)]
+    init: bool,
+    /// Database file to use. If init is set, this writes a new file. Otherwise, this opens an existing database.
+    #[arg(short = 'i', long = "in")]
+    in_path: PathBuf,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let file = "/Users/aaron/dev/Rust/turing-beavers/results.sqlite";
-    let (conn, starting_queue) = block_on(init_connection(file));
+    let (conn, starting_queue) = block_on(init_connection(args.in_path, args.init));
     println!("Starting queue size: {}", starting_queue.len());
 
     let starting_queue = if args.sort_halted_first {

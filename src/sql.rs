@@ -262,6 +262,42 @@ pub async fn submit_result(
     Ok(rows_processed)
 }
 
+#[derive(FromRow)]
+pub struct RowCounts {
+    pub total: u32,
+    pub pending: u32,
+    pub decided: u32,
+    pub halt: u32,
+    pub nonhalt: u32,
+    pub step: u32,
+    pub space: u32,
+    pub empty: u32,
+}
+impl RowCounts {
+    pub async fn get_counts(conn: &mut SqliteConnection) -> RowCounts {
+        sqlx::query_as(
+            "SELECT
+                    COUNT(*) AS total,
+                    SUM(decision IS NULL) AS pending,
+                    SUM(decision IS NOT NULL) AS decided,
+                    SUM(decision = ?) AS halt,
+                    SUM(decision = ?) AS nonhalt,
+                    SUM(decision = ?) AS step,
+                    SUM(decision = ?) AS space,
+                    SUM(decision = ?) AS empty
+                FROM results;",
+        )
+        .bind(Decision::Halting)
+        .bind(Decision::NonHalting)
+        .bind(Decision::UndecidedStepLimit)
+        .bind(Decision::UndecidedSpaceLimit)
+        .bind(Decision::EmptyTransition)
+        .fetch_one(conn)
+        .await
+        .unwrap()
+    }
+}
+
 /// Insert a [MachineTable] as a pending result row
 async fn insert_pending_row(conn: &mut SqliteConnection, table: MachineTable) -> SqlQueryResult {
     let table: PackedTable = table.into();
@@ -361,7 +397,9 @@ pub async fn run_command(conn: &mut SqliteConnection, sql: &str) -> SqlQueryResu
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionMode {
     /// Open for write. Does create new file if missing.
-    Write,
+    WriteNew,
+    /// Open for write. Does not create new file if missing.
+    WriteExisting,
     /// Open as read-only. Does not create new file if missing.
     ReadOnly,
 }
@@ -371,9 +409,14 @@ pub async fn get_connection(
     file: impl AsRef<Path>,
     mode: ConnectionMode,
 ) -> SqlResult<SqliteConnection> {
+    // Prevent overwriting existing file if using WriteNew
+    if file.as_ref().exists() && mode == ConnectionMode::WriteNew {
+        return Err(sqlx::Error::Io(std::io::ErrorKind::AlreadyExists.into()));
+    }
+
     let mut conn = SqliteConnectOptions::new()
         .filename(file)
-        .create_if_missing(mode == ConnectionMode::Write)
+        .create_if_missing(mode == ConnectionMode::WriteNew)
         .read_only(mode == ConnectionMode::ReadOnly)
         .connect()
         .await?;
@@ -402,7 +445,7 @@ mod test {
     #[test]
     fn test_submit_results() {
         block_on(async {
-            let mut conn = get_connection(":memory:", ConnectionMode::Write)
+            let mut conn = get_connection(":memory:", ConnectionMode::WriteNew)
                 .await
                 .unwrap();
             create_tables(&mut conn).await.unwrap();

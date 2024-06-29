@@ -10,7 +10,7 @@ use smol::{
     block_on,
     stream::{self, StreamExt},
 };
-use turing_beavers::sql::{create_tables, get_connection, ConnectionMode, ResultObject};
+use turing_beavers::sql::{create_tables, get_connection, ConnectionMode, ResultObject, RowCounts};
 #[derive(Parser, Debug)]
 struct Args {
     /// Database file to split
@@ -26,19 +26,11 @@ struct Args {
 
 async fn create_output_file(path: impl AsRef<Path>) -> SqliteConnection {
     println!("Creating {:?}", path.as_ref());
-    let mut conn = get_connection(path, ConnectionMode::Write).await.unwrap();
+    let mut conn = get_connection(path, ConnectionMode::WriteNew)
+        .await
+        .unwrap();
     create_tables(&mut conn).await.unwrap();
     conn
-}
-
-async fn get_row_count(conn: &mut SqliteConnection) -> u32 {
-    sqlx::query_scalar(
-        "SELECT COUNT(*) FROM results
-             LEFT JOIN stats USING (results_id)",
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .unwrap()
 }
 
 async fn run(args: Args) -> Result<(), sqlx::Error> {
@@ -46,8 +38,19 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
     let mut input_conn = get_connection(args.in_path, ConnectionMode::ReadOnly)
         .await
         .unwrap();
-    let row_count = get_row_count(&mut input_conn).await;
-    println!("Splitting {:?} rows...", row_count);
+    let RowCounts {
+        total,
+        decided,
+        pending,
+        ..
+    } = RowCounts::get_counts(&mut input_conn).await;
+    println!(
+        "Splitting {:?} rows (decided: {}, pending: {} -> {} per split db)...",
+        total,
+        decided,
+        pending,
+        pending as usize / args.num_split,
+    );
     let mut rows = ResultObject::get_rows(&mut input_conn).await;
 
     let mut decided_conn = create_output_file(&args.out_path.join("decided.sqlite")).await;
@@ -67,8 +70,8 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
             println!(
                 "{}/{} ({:.2}%)",
                 total_i,
-                row_count,
-                100.0 * total_i as f32 / row_count as f32
+                total,
+                100.0 * total_i as f32 / total as f32
             );
             now = Instant::now();
         }
@@ -87,7 +90,7 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
     for conn in pending_conns {
         conn.close().await.unwrap();
     }
-    println!("{}/{} (100%)", row_count, row_count,);
+    println!("{}/{} (100%)", total, total);
     Ok(())
 }
 
