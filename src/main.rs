@@ -57,7 +57,7 @@ impl WorkerStats {
             MachineDecision::UndecidedStepLimit => self.undecided_step += 1,
             MachineDecision::UndecidedSpaceLimit => self.undecided_space += 1,
         }
-        self.total_steps += stats.get_delta_steps();
+        self.total_steps += stats.get_total_steps();
         self.total_space += stats.space_used();
     }
 }

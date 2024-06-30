@@ -80,7 +80,6 @@ enum HaltReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunStats {
     steps_ran: usize,
-    prev_steps: usize,
     pub max_index: isize,
     pub min_index: isize,
 }
@@ -88,13 +87,9 @@ impl RunStats {
     fn new() -> RunStats {
         RunStats {
             steps_ran: 0,
-            prev_steps: 0,
             min_index: 0,
             max_index: 0,
         }
-    }
-    pub fn get_delta_steps(&self) -> usize {
-        self.steps_ran - self.prev_steps
     }
 
     pub fn space_used(&self) -> usize {
@@ -255,14 +250,10 @@ pub enum MachineDecision {
 fn get_child_nodes(node: &PendingNode) -> impl Iterator<Item = PendingNode> {
     let children = get_child_tables_for_transition(node.table, node.tape.state, node.tape.read());
 
-    let node = node.clone();
-    children.map(move |table| {
-        // TODO: Explore effects of using ExplorerNode::new(table) here instead
+    children.map(|table| {
+        // TODO: Explore effects of using PendingNode::new(table) here instead
         // Using new seems to make this much slower??
-        let mut new_node = node.clone();
-        new_node.table = table;
-        new_node.stats.prev_steps = new_node.stats.steps_ran;
-        new_node
+        PendingNode::new(table)
     })
 }
 
@@ -320,8 +311,6 @@ fn get_target_states(table: &MachineTable) -> Vec<State> {
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
-
-    use smol::io::empty;
 
     use crate::{
         seed::{
@@ -575,7 +564,7 @@ mod test {
         } else {
             unreachable!()
         };
-
+        assert!(empty_transition.len() > 0);
         for mut empty in empty_transition {
             let mut fresh_empty = PendingNode::new(empty.table);
             let fresh_empty = fresh_empty.decide();
