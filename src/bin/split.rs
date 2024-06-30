@@ -10,7 +10,7 @@ use smol::{
     block_on,
     stream::{self, StreamExt},
 };
-use turing_beavers::sql::{create_tables, get_connection, ConnectionMode, RowCounts, RowObject};
+use turing_beavers::sql::{create_tables, get_connection, ConnectionMode, InsertedRow, RowCounts};
 #[derive(Parser, Debug)]
 struct Args {
     /// Database file to split
@@ -51,7 +51,7 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
         pending,
         pending as usize / args.num_split,
     );
-    let mut rows = RowObject::get_all_rows(&mut input_conn).await;
+    let mut rows = InsertedRow::get_all_rows(&mut input_conn).await;
 
     let mut decided_conn = create_output_file(&args.out_path.join("decided.sqlite")).await;
     let mut pending_conns: Vec<SqliteConnection> = stream::iter(0..args.num_split)
@@ -76,11 +76,14 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
             now = Instant::now();
         }
 
-        if row.decision.is_some() {
-            row.insert(&mut decided_conn).await?;
-        } else {
-            row.insert(&mut pending_conns[pending_i]).await?;
-            pending_i = (pending_i + 1) % pending_conns.len();
+        match row {
+            InsertedRow::Pending(pending) => {
+                pending.insert(&mut pending_conns[pending_i]).await?;
+                pending_i = (pending_i + 1) % pending_conns.len();
+            }
+            InsertedRow::Decided(decided) => {
+                decided.insert(&mut decided_conn).await?;
+            }
         }
         total_i += 1;
     }

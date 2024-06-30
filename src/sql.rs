@@ -3,7 +3,7 @@ use std::{path::Path, str::FromStr};
 use smol::stream::{Stream, StreamExt};
 use sqlx::{
     database::HasValueRef, prelude::FromRow, sqlite::SqliteConnectOptions, Acquire, ConnectOptions,
-    Database, Decode, Encode, Sqlite, SqliteConnection,
+    Database, Decode, Encode, Sqlite, SqliteConnection, Transaction,
 };
 
 use crate::{
@@ -159,13 +159,28 @@ pub struct InsertedPendingRow {
 }
 
 impl InsertedPendingRow {
+    /// Insert this row. It is assumed that there is not already a row with the same [ResultRowID]
+    /// in the database.
+    pub async fn insert(&self, conn: &mut SqliteConnection) -> SqlResult<()> {
+        let result =
+            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, NULL)")
+                .bind(self.id)
+                .bind(self.machine)
+                .execute(&mut *conn)
+                .await?;
+        assert_eq!(result.rows_affected(), 1);
+        Ok(())
+    }
+
     /// Update a pending result row into a decided row, including stats
-    async fn update_pending_row(
+    async fn update(
         self,
         conn: &mut SqliteConnection,
         decision: Decision,
         stats: RunStats,
     ) -> SqlResult<InsertedDecidedRow> {
+        let mut txn = conn.begin().await?;
+
         let table = PackedTable::from(self.machine);
         let steps = stats.get_total_steps() as u32;
         let space = stats.space_used() as u32;
@@ -173,7 +188,7 @@ impl InsertedPendingRow {
         let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
             .bind(&table[..])
             .bind(decision)
-            .execute(&mut *conn)
+            .execute(&mut *txn)
             .await?;
         assert_eq!(result.rows_affected(), 1);
 
@@ -182,9 +197,12 @@ impl InsertedPendingRow {
             .bind(self.id)
             .bind(steps)
             .bind(space)
-            .execute(&mut *conn)
+            .execute(&mut *txn)
             .await?;
         assert_eq!(result.rows_affected(), 1);
+
+        txn.commit().await?;
+
         Ok(InsertedDecidedRow {
             id: self.id,
             machine: self.machine,
@@ -223,7 +241,7 @@ impl InsertedPendingRow {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A decided row that exists in the database
 pub struct InsertedDecidedRow {
     pub id: ResultRowID,
@@ -231,6 +249,31 @@ pub struct InsertedDecidedRow {
     pub decision: Decision,
     pub steps: u32,
     pub space: u32,
+}
+
+impl InsertedDecidedRow {
+    /// Insert this row into the database. It is assumed there is not already a row with the same [ResultRowID] in the database.
+    pub async fn insert(&self, conn: &mut SqliteConnection) -> SqlResult<()> {
+        let mut txn = conn.begin().await?;
+
+        let result =
+            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, $3)")
+                .bind(self.id)
+                .bind(self.machine)
+                .bind(self.decision)
+                .execute(&mut *txn)
+                .await?;
+        assert_eq!(result.rows_affected(), 1);
+        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
+            .bind(self.id)
+            .bind(self.steps)
+            .bind(self.space)
+            .execute(&mut *txn)
+            .await?;
+        assert_eq!(result.rows_affected(), 1);
+
+        txn.commit().await
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,7 +319,7 @@ impl WorkerResult {
 
         let decided_row = self
             .pending_row
-            .update_pending_row(&mut txn, self.decision, self.stats)
+            .update(&mut txn, self.decision, self.stats)
             .await?;
 
         let mut pending_rows = vec![];
@@ -293,66 +336,17 @@ impl WorkerResult {
 /// Represents a single row in the results table, along with any additional information in other
 /// tables. This differs from [ResultRow] in that this struct also contains information from the
 /// stats table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RowObject {
-    pub results_id: ResultRowID,
-    pub machine: MachineTable,
-    /// The result of deciding the machine along with any relevant statistics. If None, then
-    /// this machine is still pending
-    pub decision: Option<DecisionWithStats>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InsertedRow {
+    Pending(InsertedPendingRow),
+    Decided(InsertedDecidedRow),
 }
 
-impl RowObject {
-    /// Insert the entire RowObject into the database. This will insert into the result
-    /// as well as the stats table if decision is present.
-    pub async fn insert(&self, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
-        let mut txn = conn.begin().await?;
-        if let Some(decision) = self.decision {
-            self.insert_decided(decision, &mut txn).await?;
-        } else {
-            self.insert_pending(&mut txn).await?;
-        }
-        txn.commit().await
-    }
-
-    async fn insert_decided(
-        &self,
-        decision: DecisionWithStats,
-        conn: &mut SqliteConnection,
-    ) -> Result<(), sqlx::Error> {
-        let result =
-            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, $3)")
-                .bind(self.results_id)
-                .bind(self.machine)
-                .bind(decision.decision)
-                .execute(&mut *conn)
-                .await?;
-        assert_eq!(result.rows_affected(), 1);
-        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
-            .bind(self.results_id)
-            .bind(decision.steps)
-            .bind(decision.space)
-            .execute(&mut *conn)
-            .await?;
-        assert_eq!(result.rows_affected(), 1);
-        Ok(())
-    }
-
-    async fn insert_pending(&self, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
-        let result =
-            sqlx::query("INSERT INTO results (results_id, machine, decision) VALUES($1, $2, NULL)")
-                .bind(self.results_id)
-                .bind(self.machine)
-                .execute(&mut *conn)
-                .await?;
-        assert_eq!(result.rows_affected(), 1);
-        Ok(())
-    }
-
+impl InsertedRow {
     /// Retrieve all rows from the database
     pub async fn get_all_rows(
         conn: &mut SqliteConnection,
-    ) -> impl Stream<Item = Result<RowObject, sqlx::Error>> + '_ {
+    ) -> impl Stream<Item = SqlResult<InsertedRow>> + '_ {
         #[derive(FromRow)]
         struct Row {
             results_id: ResultRowID,
@@ -368,24 +362,25 @@ impl RowObject {
         )
         .fetch(&mut *conn);
 
-        result_rows.map(|result| {
-            let row = result?;
-            let decision = if let Some(decision) = row.decision {
-                Some(DecisionWithStats {
+        result_rows.map(|row| {
+            let row = row?;
+            let id = row.results_id;
+            let machine = row.machine;
+            let row_object = if let Some(decision) = row.decision {
+                // These unwraps are safe because the stats row is present if and only if there is a decision
+                let steps = row.steps.unwrap();
+                let space = row.space.unwrap();
+                InsertedRow::Decided(InsertedDecidedRow {
+                    id,
+                    machine,
                     decision,
-                    // These unwraps are safe because the stats row is present if and only if there is a decision
-                    steps: row.steps.unwrap(),
-                    space: row.space.unwrap(),
+                    steps,
+                    space,
                 })
             } else {
-                None
+                InsertedRow::Pending(InsertedPendingRow { id, machine })
             };
-
-            Ok(RowObject {
-                results_id: row.results_id,
-                machine: row.machine,
-                decision,
-            })
+            Ok(row_object)
         })
     }
 }
