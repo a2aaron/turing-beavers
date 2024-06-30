@@ -70,8 +70,7 @@ impl WorkerResult {
 
         let pending_rows = if let MachineDecision::EmptyTransition(child_rows) = self.decision {
             let mut out = Vec::with_capacity(child_rows.len());
-            for node in child_rows {
-                let machine = node.table;
+            for machine in child_rows {
                 let pending_row = UninsertedPendingRow { machine };
                 let pending_row = pending_row.insert_pending_row(&mut txn).await?;
                 out.push(InsertedRow::Pending(pending_row));
@@ -112,8 +111,7 @@ mod test {
 
             let machine = MachineTable::from_str(STARTING_MACHINE).unwrap();
             let decided_node = PendingNode::new(machine).decide();
-            let MachineDecision::EmptyTransition(pending_nodes) = decided_node.decision.clone()
-            else {
+            let MachineDecision::EmptyTransition(machines) = decided_node.decision.clone() else {
                 unreachable!()
             };
 
@@ -129,7 +127,7 @@ mod test {
                     .await
                     .unwrap();
 
-            assert_eq!(pending_nodes.len(), inserted_children.len());
+            assert_eq!(machines.len(), inserted_children.len());
             assert_eq!(
                 inserted_decided_row.decision,
                 Decision::from(&decided_node.decision)
@@ -143,8 +141,7 @@ mod test {
                 decided_node.stats.get_total_steps() as u32
             );
 
-            let expected_pending_queue: HashSet<MachineTable> =
-                pending_nodes.iter().map(|x| x.table).collect();
+            let expected_pending_queue: HashSet<MachineTable> = machines.into_iter().collect();
             let actual_pending_queue: HashSet<MachineTable> =
                 InsertedPendingRow::get_pending_rows(&mut conn)
                     .await

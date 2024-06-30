@@ -6,25 +6,24 @@ use turing_beavers::{
 };
 
 pub fn with_starting_queue(
-    tables: Vec<MachineTable>,
-) -> (Receiver<PendingNode>, Sender<PendingNode>) {
+    machines: Vec<MachineTable>,
+) -> (Receiver<MachineTable>, Sender<MachineTable>) {
     let (send, recv) = crossbeam::channel::unbounded();
-    for table in tables {
-        let machine = PendingNode::new(table);
+    for machine in machines {
         send.send(machine).unwrap();
     }
     (recv, send)
 }
 
-pub fn new_queue() -> (Receiver<PendingNode>, Sender<PendingNode>) {
+pub fn new_queue() -> (Receiver<MachineTable>, Sender<MachineTable>) {
     let table = MachineTable::from_str(STARTING_MACHINE).unwrap();
     with_starting_queue(vec![table])
 }
 
 pub fn add_work_to_queue(
-    sender: &Sender<PendingNode>,
-    nodes: Vec<PendingNode>,
-) -> Result<(), SendError<PendingNode>> {
+    sender: &Sender<MachineTable>,
+    nodes: Vec<MachineTable>,
+) -> Result<(), SendError<MachineTable>> {
     for node in nodes {
         sender.send(node)?;
     }
@@ -35,7 +34,11 @@ fn run(num_machines: usize) {
     let (recv, send) = new_queue();
     let mut num_decided = 0;
     while num_decided < num_machines {
-        let result = std::hint::black_box(recv.recv().unwrap().decide());
+        let result = std::hint::black_box({
+            let machine = recv.recv().unwrap();
+            let mut node = PendingNode::new(machine);
+            node.decide()
+        });
         match result.decision {
             MachineDecision::EmptyTransition(nodes) => add_work_to_queue(&send, nodes).unwrap(),
             _ => num_decided += 1,

@@ -144,7 +144,9 @@ impl PendingNode {
                 // We halted because we encountered an empty transition. This means that we need
                 // to create a bunch of new machines whose tape is the same, but with the missing
                 // transition defined.
-                let nodes = get_child_nodes(self).collect();
+                let nodes =
+                    get_child_tables_for_transition(self.table, self.tape.state, self.tape.read())
+                        .collect();
                 MachineDecision::EmptyTransition(nodes)
             }
         };
@@ -214,17 +216,7 @@ pub enum MachineDecision {
     NonHalting,
     UndecidedStepLimit,
     UndecidedSpaceLimit,
-    EmptyTransition(Vec<PendingNode>),
-}
-
-fn get_child_nodes(node: &PendingNode) -> impl Iterator<Item = PendingNode> {
-    let children = get_child_tables_for_transition(node.table, node.tape.state, node.tape.read());
-
-    children.map(|table| {
-        // TODO: Explore effects of using PendingNode::new(table) here instead
-        // Using new seems to make this much slower??
-        PendingNode::new(table)
-    })
+    EmptyTransition(Vec<MachineTable>),
 }
 
 /// Given a transition [Table], returns a set of Tables whose
@@ -329,22 +321,21 @@ mod test {
         let mut node = PendingNode::new(table);
         let node = node.decide();
         assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
-        let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
+        let machines = if let MachineDecision::EmptyTransition(machines) = node.decision {
             machines
         } else {
             unreachable!()
         };
-        let tables: Vec<MachineTable> = new_nodes.iter().map(|node| node.table).collect();
-        println!("{:?}", tables);
-        assert_eq!(tables.len(), 8);
-        assert_contains(&tables, "1RB---_0LA---_------_------_------");
-        assert_contains(&tables, "1RB---_0RA---_------_------_------");
-        assert_contains(&tables, "1RB---_1LA---_------_------_------");
-        assert_contains(&tables, "1RB---_1RA---_------_------_------");
-        assert_contains(&tables, "1RB---_0LB---_------_------_------");
-        assert_contains(&tables, "1RB---_0RB---_------_------_------");
-        assert_contains(&tables, "1RB---_1LB---_------_------_------");
-        assert_contains(&tables, "1RB---_1RB---_------_------_------");
+        println!("{:?}", machines);
+        assert_eq!(machines.len(), 8);
+        assert_contains(&machines, "1RB---_0LA---_------_------_------");
+        assert_contains(&machines, "1RB---_0RA---_------_------_------");
+        assert_contains(&machines, "1RB---_1LA---_------_------_------");
+        assert_contains(&machines, "1RB---_1RA---_------_------_------");
+        assert_contains(&machines, "1RB---_0LB---_------_------_------");
+        assert_contains(&machines, "1RB---_0RB---_------_------_------");
+        assert_contains(&machines, "1RB---_1LB---_------_------_------");
+        assert_contains(&machines, "1RB---_1RB---_------_------_------");
     }
 
     #[test]
@@ -353,28 +344,27 @@ mod test {
         let mut node = PendingNode::new(table);
         let node = node.decide();
         assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
-        let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
+        let machines = if let MachineDecision::EmptyTransition(machines) = node.decision {
             machines
         } else {
             unreachable!()
         };
-        let tables: Vec<MachineTable> = new_nodes.iter().map(|node| node.table).collect();
-        println!("{:?}", tables);
-        assert_eq!(tables.len(), 12);
-        assert_contains(&tables, "1RB0RA_1LA---_------_------_------");
-        assert_contains(&tables, "1RB0LA_1LA---_------_------_------");
-        assert_contains(&tables, "1RB1RA_1LA---_------_------_------");
-        assert_contains(&tables, "1RB1LA_1LA---_------_------_------");
+        println!("{:?}", machines);
+        assert_eq!(machines.len(), 12);
+        assert_contains(&machines, "1RB0RA_1LA---_------_------_------");
+        assert_contains(&machines, "1RB0LA_1LA---_------_------_------");
+        assert_contains(&machines, "1RB1RA_1LA---_------_------_------");
+        assert_contains(&machines, "1RB1LA_1LA---_------_------_------");
 
-        assert_contains(&tables, "1RB0RB_1LA---_------_------_------");
-        assert_contains(&tables, "1RB0LB_1LA---_------_------_------");
-        assert_contains(&tables, "1RB1RB_1LA---_------_------_------");
-        assert_contains(&tables, "1RB1LB_1LA---_------_------_------");
+        assert_contains(&machines, "1RB0RB_1LA---_------_------_------");
+        assert_contains(&machines, "1RB0LB_1LA---_------_------_------");
+        assert_contains(&machines, "1RB1RB_1LA---_------_------_------");
+        assert_contains(&machines, "1RB1LB_1LA---_------_------_------");
 
-        assert_contains(&tables, "1RB0RC_1LA---_------_------_------");
-        assert_contains(&tables, "1RB0LC_1LA---_------_------_------");
-        assert_contains(&tables, "1RB1RC_1LA---_------_------_------");
-        assert_contains(&tables, "1RB1LC_1LA---_------_------_------");
+        assert_contains(&machines, "1RB0RC_1LA---_------_------_------");
+        assert_contains(&machines, "1RB0LC_1LA---_------_------_------");
+        assert_contains(&machines, "1RB1RC_1LA---_------_------_------");
+        assert_contains(&machines, "1RB1LC_1LA---_------_------_------");
     }
 
     #[test]
@@ -391,23 +381,22 @@ mod test {
         let mut node = PendingNode::new(table);
         let node = node.decide();
         assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
-        let new_nodes = if let MachineDecision::EmptyTransition(machines) = node.decision {
+        let machines = if let MachineDecision::EmptyTransition(machines) = node.decision {
             machines
         } else {
             unreachable!()
         };
-        let tables: Vec<MachineTable> = new_nodes.iter().map(|node| node.table).collect();
-        println!("{:?}", tables);
-        assert_eq!(tables.len(), 8);
-        assert_contains(&tables, "1RB1RB_0LA---_------_------_------");
-        assert_contains(&tables, "1RB1RB_0RA---_------_------_------");
-        assert_contains(&tables, "1RB1RB_1LA---_------_------_------");
-        assert_contains(&tables, "1RB1RB_1RA---_------_------_------");
+        println!("{:?}", machines);
+        assert_eq!(machines.len(), 8);
+        assert_contains(&machines, "1RB1RB_0LA---_------_------_------");
+        assert_contains(&machines, "1RB1RB_0RA---_------_------_------");
+        assert_contains(&machines, "1RB1RB_1LA---_------_------_------");
+        assert_contains(&machines, "1RB1RB_1RA---_------_------_------");
 
-        assert_contains(&tables, "1RB1RB_0LB---_------_------_------");
-        assert_contains(&tables, "1RB1RB_0RB---_------_------_------");
-        assert_contains(&tables, "1RB1RB_1LB---_------_------_------");
-        assert_contains(&tables, "1RB1RB_1RB---_------_------_------");
+        assert_contains(&machines, "1RB1RB_0LB---_------_------_------");
+        assert_contains(&machines, "1RB1RB_0RB---_------_------_------");
+        assert_contains(&machines, "1RB1RB_1LB---_------_------_------");
+        assert_contains(&machines, "1RB1RB_1RB---_------_------_------");
     }
 
     #[test]
@@ -488,7 +477,7 @@ mod test {
     }
 
     #[test]
-    fn test_decide_fresh_empty_transitions() {
+    fn test_decide_empty_transitions() {
         let table = MachineTable::from_str("1RB---_1RC---_1RD---_1RE---_1LD---").unwrap();
         let mut node = PendingNode::new(table);
         // Step 0:
@@ -517,23 +506,13 @@ mod test {
 
         let reason = node.decide();
 
-        let empty_transition = if let MachineDecision::EmptyTransition(empty) = reason.decision {
-            empty
-        } else {
-            unreachable!()
+        match reason.decision {
+            MachineDecision::EmptyTransition(machines) => {
+                assert!(machines.len() > 0);
+            }
+            _ => unreachable!(),
         };
-        assert!(empty_transition.len() > 0);
-        for mut empty in empty_transition {
-            let mut fresh_empty = PendingNode::new(empty.table);
-            let fresh_empty = fresh_empty.decide();
-            let empty = empty.decide();
-
-            assert_eq!(
-                empty.stats.get_total_steps(),
-                fresh_empty.stats.get_total_steps()
-            );
-            assert_eq!(empty.stats.space_used(), fresh_empty.stats.space_used());
-            assert_eq!(empty.decision, fresh_empty.decision);
-        }
+        assert_eq!(5, reason.stats.space_used());
+        assert_eq!(5, reason.stats.get_total_steps());
     }
 }
