@@ -10,7 +10,7 @@ use smol::{
     block_on,
     stream::{self, StreamExt},
 };
-use turing_beavers::sql::{create_tables, get_connection, ConnectionMode, ResultObject, RowCounts};
+use turing_beavers::sql::{create_tables, get_connection, ConnectionMode, RowCounts, RowObject};
 #[derive(Parser, Debug)]
 struct Args {
     /// Database file to split
@@ -51,7 +51,7 @@ async fn run(args: Args) -> Result<(), sqlx::Error> {
         pending,
         pending as usize / args.num_split,
     );
-    let mut rows = ResultObject::get_all_rows(&mut input_conn).await;
+    let mut rows = RowObject::get_all_rows(&mut input_conn).await;
 
     let mut decided_conn = create_output_file(&args.out_path.join("decided.sqlite")).await;
     let mut pending_conns: Vec<SqliteConnection> = stream::iter(0..args.num_split)

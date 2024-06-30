@@ -108,7 +108,7 @@ impl sqlx::Type<Sqlite> for MachineTable {
     }
 }
 
-/// Represents a single row in the results table. This differs from [ResultObject] in that this
+/// Represents a single row in the results table. This differs from [RowObject] in that this
 /// struct does not contain any extra data from the stats table.
 #[derive(sqlx::FromRow, Clone, Copy, PartialEq, Eq)]
 pub struct ResultRow {
@@ -132,7 +132,7 @@ pub struct StatsRow {
 /// tables. This differs from [ResultRow] in that this struct also contains information from the
 /// stats table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResultObject {
+pub struct RowObject {
     pub results_id: RowID,
     pub machine: MachineTable,
     /// The result of deciding the machine along with any relevant statistics. If None, then
@@ -140,8 +140,8 @@ pub struct ResultObject {
     pub decision: Option<DecisionWithStats>,
 }
 
-impl ResultObject {
-    /// Insert the entire ResultObject into the database. This will insert into the result
+impl RowObject {
+    /// Insert the entire RowObject into the database. This will insert into the result
     /// as well as the stats table if decision is present.
     pub async fn insert(&self, conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
         let mut txn = conn.begin().await?;
@@ -190,7 +190,7 @@ impl ResultObject {
     /// Retrieve all results from the database
     pub async fn get_all_rows(
         conn: &mut SqliteConnection,
-    ) -> impl Stream<Item = Result<ResultObject, sqlx::Error>> + '_ {
+    ) -> impl Stream<Item = Result<RowObject, sqlx::Error>> + '_ {
         #[derive(FromRow)]
         struct Row {
             results_id: RowID,
@@ -219,7 +219,7 @@ impl ResultObject {
                 None
             };
 
-            Ok(ResultObject {
+            Ok(RowObject {
                 results_id: row.results_id,
                 machine: row.machine,
                 decision,
