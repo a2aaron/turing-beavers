@@ -15,7 +15,7 @@ use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
 use sqlx::{Connection, SqliteConnection};
 use turing_beavers::{
-    seed::{MachineDecision, PendingNode, RunStats},
+    seed::{Decision, PendingNode, RunStats},
     sql::{
         create_tables, get_connection, insert_initial_row, ConnectionMode, InsertedDecidedRow,
         InsertedPendingRow, InsertedRow, RowCounts,
@@ -29,8 +29,8 @@ use turing_beavers::{
 type SenderProcessorStatsQueue = Sender<ProcessorStats>;
 type ReceiverProcessorStatsQueue = Receiver<ProcessorStats>;
 
-type SenderWorkerStatsQueue = Sender<(MachineDecision, RunStats)>;
-type ReceiverWorkerStatsQueue = Receiver<(MachineDecision, RunStats)>;
+type SenderWorkerStatsQueue = Sender<(Decision, RunStats)>;
+type ReceiverWorkerStatsQueue = Receiver<(Decision, RunStats)>;
 
 #[derive(Debug, Clone, Copy)]
 struct WorkerStats {
@@ -56,13 +56,13 @@ impl WorkerStats {
         }
     }
 
-    fn add(&mut self, (decision, stats): (MachineDecision, RunStats)) {
+    fn add(&mut self, (decision, stats): (Decision, RunStats)) {
         match decision {
-            MachineDecision::EmptyTransition(_) => self.empty += 1,
-            MachineDecision::Halting => self.halt += 1,
-            MachineDecision::NonHalting => self.nonhalt += 1,
-            MachineDecision::UndecidedStepLimit => self.undecided_step += 1,
-            MachineDecision::UndecidedSpaceLimit => self.undecided_space += 1,
+            Decision::EmptyTransition(_) => self.empty += 1,
+            Decision::Halting => self.halt += 1,
+            Decision::NonHalting => self.nonhalt += 1,
+            Decision::UndecidedStepLimit => self.undecided_step += 1,
+            Decision::UndecidedSpaceLimit => self.undecided_space += 1,
         }
         self.total_steps += stats.get_total_steps();
         self.total_space += stats.space_used();

@@ -1,6 +1,6 @@
 use crate::{
-    seed::{DecidedNode, MachineDecision, RunStats},
-    sql::{Decision, InsertedDecidedRow, InsertedRow, SqlResult, UninsertedPendingRow},
+    seed::{DecidedNode, Decision, RunStats},
+    sql::{DecisionKind, InsertedDecidedRow, InsertedRow, SqlResult, UninsertedPendingRow},
 };
 use crossbeam::channel::{Receiver, SendError, Sender};
 use sqlx::{Connection, SqliteConnection};
@@ -35,7 +35,7 @@ pub fn add_work_to_queue(
 /// Worker result produced by worker threads
 pub struct WorkerResult {
     work_unit: WorkUnit,
-    decision: MachineDecision,
+    decision: Decision,
     stats: RunStats,
 }
 
@@ -62,13 +62,13 @@ impl WorkerResult {
 
         let decided_row = match self.work_unit {
             InsertedRow::Pending(pending) => {
-                let decision = Decision::from(&self.decision);
+                let decision = DecisionKind::from(&self.decision);
                 pending.update(&mut txn, decision, self.stats).await?
             }
             InsertedRow::Decided(_) => todo!(),
         };
 
-        let pending_rows = if let MachineDecision::EmptyTransition(child_rows) = self.decision {
+        let pending_rows = if let Decision::EmptyTransition(child_rows) = self.decision {
             let mut out = Vec::with_capacity(child_rows.len());
             for machine in child_rows {
                 let pending_row = UninsertedPendingRow { machine };
@@ -92,9 +92,9 @@ mod test {
     use smol::block_on;
 
     use crate::{
-        seed::{MachineDecision, PendingNode, BB5_CHAMPION, STARTING_MACHINE},
+        seed::{Decision, PendingNode, BB5_CHAMPION, STARTING_MACHINE},
         sql::{
-            create_tables, get_connection, ConnectionMode, Decision, InsertedPendingRow,
+            create_tables, get_connection, ConnectionMode, DecisionKind, InsertedPendingRow,
             UninsertedPendingRow,
         },
         turing::MachineTable,
@@ -111,7 +111,7 @@ mod test {
 
             let machine = MachineTable::from_str(STARTING_MACHINE).unwrap();
             let decided_node = PendingNode::new(machine).decide();
-            let MachineDecision::EmptyTransition(machines) = decided_node.decision.clone() else {
+            let Decision::EmptyTransition(machines) = decided_node.decision.clone() else {
                 unreachable!()
             };
 
@@ -130,7 +130,7 @@ mod test {
             assert_eq!(machines.len(), inserted_children.len());
             assert_eq!(
                 inserted_decided_row.decision,
-                Decision::from(&decided_node.decision)
+                DecisionKind::from(&decided_node.decision)
             );
             assert_eq!(
                 inserted_decided_row.space,
@@ -180,7 +180,7 @@ mod test {
             assert_eq!(0, inserted_children.len());
             assert_eq!(
                 inserted_decided_row.decision,
-                Decision::from(&decided_node.decision)
+                DecisionKind::from(&decided_node.decision)
             );
             assert_eq!(
                 inserted_decided_row.space,

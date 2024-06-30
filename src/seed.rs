@@ -136,10 +136,10 @@ impl PendingNode {
             // never halt since there's no way for it break out of those 4 states (if there was,
             // this would contradict the value of BB(4), since it would mean there is a halting
             // 2-symbol 4-state TM that halts later than BB(4) = 107 steps)
-            HaltReason::ExceededStepLimit if four_states_or_less => MachineDecision::NonHalting,
-            HaltReason::ExceededStepLimit => MachineDecision::UndecidedStepLimit,
-            HaltReason::ExceededSpaceLimit => MachineDecision::UndecidedSpaceLimit,
-            HaltReason::HaltState => MachineDecision::Halting,
+            HaltReason::ExceededStepLimit if four_states_or_less => Decision::NonHalting,
+            HaltReason::ExceededStepLimit => Decision::UndecidedStepLimit,
+            HaltReason::ExceededSpaceLimit => Decision::UndecidedSpaceLimit,
+            HaltReason::HaltState => Decision::Halting,
             HaltReason::EmptyTransition => {
                 // We halted because we encountered an empty transition. This means that we need
                 // to create a bunch of new machines whose tape is the same, but with the missing
@@ -150,7 +150,7 @@ impl PendingNode {
                     self.tape.read(),
                 )
                 .collect();
-                MachineDecision::EmptyTransition(nodes)
+                Decision::EmptyTransition(nodes)
             }
         };
         DecidedNode {
@@ -209,12 +209,12 @@ impl PendingNode {
 #[derive(Debug, PartialEq, Eq)]
 pub struct DecidedNode {
     pub machine: MachineTable,
-    pub decision: MachineDecision,
+    pub decision: Decision,
     pub stats: RunStats,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineDecision {
+pub enum Decision {
     Halting,
     NonHalting,
     UndecidedStepLimit,
@@ -278,9 +278,7 @@ mod test {
     use std::str::FromStr;
 
     use crate::{
-        seed::{
-            HaltReason, MachineDecision, PendingNode, BB5_SPACE, BB5_STEPS, SPACE_LIMIT, TIME_LIMIT,
-        },
+        seed::{Decision, HaltReason, PendingNode, BB5_SPACE, BB5_STEPS, SPACE_LIMIT, TIME_LIMIT},
         turing::{MachineTable, State, Symbol},
     };
 
@@ -323,8 +321,8 @@ mod test {
         let machine = MachineTable::from_str("1RB---_------_------_------_------").unwrap();
         let mut node = PendingNode::new(machine);
         let node = node.decide();
-        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
-        let machines = if let MachineDecision::EmptyTransition(machines) = node.decision {
+        assert!(matches!(node.decision, Decision::EmptyTransition(_)));
+        let machines = if let Decision::EmptyTransition(machines) = node.decision {
             machines
         } else {
             unreachable!()
@@ -346,8 +344,8 @@ mod test {
         let machine = MachineTable::from_str("1RB---_1LA---_------_------_------").unwrap();
         let mut node = PendingNode::new(machine);
         let node = node.decide();
-        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
-        let machines = if let MachineDecision::EmptyTransition(machines) = node.decision {
+        assert!(matches!(node.decision, Decision::EmptyTransition(_)));
+        let machines = if let Decision::EmptyTransition(machines) = node.decision {
             machines
         } else {
             unreachable!()
@@ -375,7 +373,7 @@ mod test {
         let machine = MachineTable::from_str("1RB1RB_1LA---_------_------_------").unwrap();
         let mut node = PendingNode::new(machine);
         let node = node.decide();
-        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
+        assert!(matches!(node.decision, Decision::EmptyTransition(_)));
     }
 
     #[test]
@@ -383,8 +381,8 @@ mod test {
         let machine = MachineTable::from_str("1RB1RB_------_------_------_------").unwrap();
         let mut node = PendingNode::new(machine);
         let node = node.decide();
-        assert!(matches!(node.decision, MachineDecision::EmptyTransition(_)));
-        let machines = if let MachineDecision::EmptyTransition(machines) = node.decision {
+        assert!(matches!(node.decision, Decision::EmptyTransition(_)));
+        let machines = if let Decision::EmptyTransition(machines) = node.decision {
             machines
         } else {
             unreachable!()
@@ -510,7 +508,7 @@ mod test {
         let reason = node.decide();
 
         match reason.decision {
-            MachineDecision::EmptyTransition(machines) => {
+            Decision::EmptyTransition(machines) => {
                 assert!(machines.len() > 0);
             }
             _ => unreachable!(),

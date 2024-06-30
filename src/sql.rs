@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::{mem::Discriminant, path::Path, str::FromStr};
 
 use smol::stream::{Stream, StreamExt};
 use sqlx::{
@@ -7,7 +7,7 @@ use sqlx::{
 };
 
 use crate::{
-    seed::{MachineDecision, RunStats, STARTING_MACHINE},
+    seed::{Decision, RunStats, STARTING_MACHINE},
     turing::MachineTable,
 };
 
@@ -22,9 +22,9 @@ pub type ResultRowID = i64;
 pub type PackedMachine = [u8; 7];
 
 /// The type of the "decision" column in the results table. This is effectively a discriminant-only
-/// version of [MachineDecision]
+/// version of [Decision]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
+pub enum DecisionKind {
     Halting = 0,
     NonHalting = 1,
     UndecidedStepLimit = 2,
@@ -32,25 +32,25 @@ pub enum Decision {
     EmptyTransition = 4,
 }
 
-impl From<&MachineDecision> for Decision {
-    fn from(value: &MachineDecision) -> Self {
+impl From<&Decision> for DecisionKind {
+    fn from(value: &Decision) -> Self {
         match value {
-            MachineDecision::Halting => Decision::Halting,
-            MachineDecision::NonHalting => Decision::NonHalting,
-            MachineDecision::UndecidedStepLimit => Decision::UndecidedStepLimit,
-            MachineDecision::UndecidedSpaceLimit => Decision::UndecidedSpaceLimit,
-            MachineDecision::EmptyTransition(_) => Decision::EmptyTransition,
+            Decision::Halting => DecisionKind::Halting,
+            Decision::NonHalting => DecisionKind::NonHalting,
+            Decision::UndecidedStepLimit => DecisionKind::UndecidedStepLimit,
+            Decision::UndecidedSpaceLimit => DecisionKind::UndecidedSpaceLimit,
+            Decision::EmptyTransition(_) => DecisionKind::EmptyTransition,
         }
     }
 }
 
-impl sqlx::Type<Sqlite> for Decision {
+impl sqlx::Type<Sqlite> for DecisionKind {
     fn type_info() -> <Sqlite as Database>::TypeInfo {
         u8::type_info()
     }
 }
 
-impl<'r> Encode<'r, Sqlite> for Decision {
+impl<'r> Encode<'r, Sqlite> for DecisionKind {
     fn encode_by_ref(
         &self,
         buf: &mut <Sqlite as sqlx::database::HasArguments<'r>>::ArgumentBuffer,
@@ -59,17 +59,17 @@ impl<'r> Encode<'r, Sqlite> for Decision {
     }
 }
 
-impl<'r> Decode<'r, Sqlite> for Decision {
+impl<'r> Decode<'r, Sqlite> for DecisionKind {
     fn decode(
         value: <Sqlite as HasValueRef<'r>>::ValueRef,
     ) -> Result<Self, sqlx::error::BoxDynError> {
         let value = <u8 as Decode<Sqlite>>::decode(value)?;
         let value = match value {
-            0 => Ok(Decision::Halting),
-            1 => Ok(Decision::NonHalting),
-            2 => Ok(Decision::UndecidedStepLimit),
-            3 => Ok(Decision::UndecidedSpaceLimit),
-            4 => Ok(Decision::EmptyTransition),
+            0 => Ok(DecisionKind::Halting),
+            1 => Ok(DecisionKind::NonHalting),
+            2 => Ok(DecisionKind::UndecidedStepLimit),
+            3 => Ok(DecisionKind::UndecidedSpaceLimit),
+            4 => Ok(DecisionKind::EmptyTransition),
             _ => Err(format!(
                 "Decision out of range (expected 0 to 4, got {value})"
             )),
@@ -112,7 +112,7 @@ pub struct ResultRow {
     pub results_id: ResultRowID,
     pub machine: MachineTable,
     /// The result of deciding the machine. If None, then this machine is still pending.
-    pub decision: Option<Decision>,
+    pub decision: Option<DecisionKind>,
 }
 
 /// Represents a single row in the stats table
@@ -188,7 +188,7 @@ impl InsertedPendingRow {
     pub async fn update(
         self,
         conn: &mut SqliteConnection,
-        decision: Decision,
+        decision: DecisionKind,
         stats: RunStats,
     ) -> SqlResult<InsertedDecidedRow> {
         let mut txn = conn.begin().await?;
@@ -251,7 +251,7 @@ impl InsertedPendingRow {
 pub struct InsertedDecidedRow {
     pub id: ResultRowID,
     pub machine: MachineTable,
-    pub decision: Decision,
+    pub decision: DecisionKind,
     pub steps: u32,
     pub space: u32,
 }
@@ -288,7 +288,7 @@ impl InsertedDecidedRow {
         struct Row {
             results_id: ResultRowID,
             machine: Vec<u8>,
-            decision: Decision,
+            decision: DecisionKind,
             steps: u32,
             space: u32,
         }
@@ -330,7 +330,7 @@ impl InsertedRow {
         struct Row {
             results_id: ResultRowID,
             machine: MachineTable,
-            decision: Option<Decision>,
+            decision: Option<DecisionKind>,
             steps: Option<u32>,
             space: Option<u32>,
         }
@@ -374,7 +374,7 @@ impl InsertedRow {
 /// A decision along with any relevant stats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecisionWithStats {
-    pub decision: Decision,
+    pub decision: DecisionKind,
     pub steps: u32,
     pub space: u32,
 }
@@ -404,11 +404,11 @@ impl RowCounts {
                     SUM(decision = ?) AS empty
                 FROM results;",
         )
-        .bind(Decision::Halting)
-        .bind(Decision::NonHalting)
-        .bind(Decision::UndecidedStepLimit)
-        .bind(Decision::UndecidedSpaceLimit)
-        .bind(Decision::EmptyTransition)
+        .bind(DecisionKind::Halting)
+        .bind(DecisionKind::NonHalting)
+        .bind(DecisionKind::UndecidedStepLimit)
+        .bind(DecisionKind::UndecidedSpaceLimit)
+        .bind(DecisionKind::EmptyTransition)
         .fetch_one(conn)
         .await
         .unwrap()

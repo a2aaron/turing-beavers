@@ -1,7 +1,7 @@
 use crossbeam::channel::{Receiver, SendError, Sender};
 use std::{str::FromStr, time::Instant};
 use turing_beavers::{
-    seed::{MachineDecision, PendingNode, STARTING_MACHINE},
+    seed::{Decision, PendingNode, STARTING_MACHINE},
     turing::MachineTable,
 };
 
@@ -40,7 +40,7 @@ fn run(num_machines: usize) {
             node.decide()
         });
         match result.decision {
-            MachineDecision::EmptyTransition(nodes) => add_work_to_queue(&send, nodes).unwrap(),
+            Decision::EmptyTransition(nodes) => add_work_to_queue(&send, nodes).unwrap(),
             _ => num_decided += 1,
         }
     }
