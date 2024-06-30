@@ -385,7 +385,7 @@ struct Args {
     /// Number of worker threads to run with.
     #[arg(short, long)]
     workers: usize,
-    /// If present, sort so that tables with the Halted state are processed first
+    /// If present, sort so that machines with the Halted state are processed first
     #[arg(long, action)]
     sort_halted_first: bool,
     /// If present, run with initial conditions. Otherwise, assume that we are using an existing database.
@@ -408,7 +408,7 @@ fn main() {
     let starting_queue = if args.sort_halted_first {
         let (mut halts, mut not_halts): (Vec<WorkUnit>, Vec<WorkUnit>) = starting_queue
             .iter()
-            .partition(|table| table.machine().contains_halt_transition());
+            .partition(|row| row.machine().contains_halt_transition());
         halts.append(&mut not_halts);
         halts
     } else {

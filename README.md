@@ -54,8 +54,8 @@ D and E). In this case, the target states will be A, B, C, and D.
 In fact, we can list out all the cases. Since we start with only state A being defined/visited and always add the
 "lowest" unvisited state, then we will always visit the new states in the order A, B, C, D, E.
 
-Another way to say this: The set of target states is just the states which have a defined transition in the table, plus
-the next state which would come after that. Also: Note that this case deliberately excludes the halt state from
+Another way to say this: The set of target states is just the states which have a defined transition in the transition table,
+plus the next state which would come after that. Also: Note that this case deliberately excludes the halt state from
 consideration (obviously if we define the target state for the transition we are about to take as the halt state then
 the machine will immediately halt, which is boring)
 

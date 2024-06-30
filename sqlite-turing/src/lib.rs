@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use sqlite_loadable::prelude::*;
 use sqlite_loadable::{api, define_scalar_function, Result};
-use turing_beavers::sql::PackedTable;
+use turing_beavers::sql::PackedMachine;
 use turing_beavers::turing::MachineTable;
 
 pub fn transition_table(
@@ -10,8 +10,8 @@ pub fn transition_table(
     values: &[*mut sqlite3_value],
 ) -> Result<()> {
     let slice = api::value_blob(values.get(0).expect("1st argument as blob"));
-    let table = MachineTable::try_from(slice).map_err(|_| "Could not parse blob")?;
-    api::result_text(context, table.to_string())?;
+    let machine = MachineTable::try_from(slice).map_err(|_| "Could not parse blob")?;
+    api::result_text(context, machine.to_string())?;
     Ok(())
 }
 
@@ -20,8 +20,8 @@ pub fn transition_bytes(
     values: &[*mut sqlite3_value],
 ) -> Result<()> {
     let string = api::value_text(values.get(0).expect("1st argument as string"))?;
-    let table = MachineTable::from_str(string).map_err(|_| "Could not parse string")?;
-    api::result_blob(context, &PackedTable::from(table));
+    let machine = MachineTable::from_str(string).map_err(|_| "Could not parse string")?;
+    api::result_blob(context, &PackedMachine::from(machine));
     Ok(())
 }
 

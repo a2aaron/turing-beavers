@@ -19,7 +19,7 @@ pub type SqlQueryResult = SqlResult<sqlx::sqlite::SqliteQueryResult>;
 pub type ResultRowID = i64;
 
 /// The type of the "machine" column in the results table
-pub type PackedTable = [u8; 7];
+pub type PackedMachine = [u8; 7];
 
 /// The type of the "decision" column in the results table. This is effectively a discriminant-only
 /// version of [MachineDecision]
@@ -84,9 +84,8 @@ impl<'r> Encode<'r, Sqlite> for MachineTable {
         &self,
         buf: &mut <Sqlite as sqlx::database::HasArguments<'r>>::ArgumentBuffer,
     ) -> sqlx::encode::IsNull {
-        let table = PackedTable::from(*self).to_vec();
-        let foo = table.encode(buf);
-        foo
+        let machine = PackedMachine::from(*self).to_vec();
+        machine.encode(buf)
     }
 }
 
@@ -94,9 +93,9 @@ impl<'r> Decode<'r, Sqlite> for MachineTable {
     fn decode(
         value: <Sqlite as HasValueRef<'r>>::ValueRef,
     ) -> Result<Self, sqlx::error::BoxDynError> {
-        let value = <&[u8] as Decode<Sqlite>>::decode(value)?;
-        let value = MachineTable::try_from(value);
-        Ok(value?)
+        let bytes = <&[u8] as Decode<Sqlite>>::decode(value)?;
+        let machine = MachineTable::try_from(bytes)?;
+        Ok(machine)
     }
 }
 
@@ -151,9 +150,9 @@ impl UninsertedPendingRow {
         self,
         conn: &mut SqliteConnection,
     ) -> SqlResult<InsertedPendingRow> {
-        let table = PackedTable::from(self.machine);
+        let packed = PackedMachine::from(self.machine);
         let result = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, NULL)")
-            .bind(&table[..])
+            .bind(&packed[..])
             .execute(conn)
             .await?;
         assert_eq!(result.rows_affected(), 1);
@@ -195,9 +194,9 @@ impl InsertedPendingRow {
         let mut txn = conn.begin().await?;
 
         // Update decision row
-        let table = PackedTable::from(self.machine);
+        let machine = PackedMachine::from(self.machine);
         let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
-            .bind(&table[..])
+            .bind(&machine[..])
             .bind(decision)
             .execute(&mut *txn)
             .await?;
@@ -443,7 +442,7 @@ pub async fn insert_initial_row(conn: &mut SqliteConnection) -> SqlResult<Insert
     // Try to insert the initial row. OR IGNORE is used here to not do the insert if we have already
     // decided the row.
     let machine = MachineTable::from_str(STARTING_MACHINE).unwrap();
-    let array: PackedTable = machine.into();
+    let array: PackedMachine = machine.into();
     let result = sqlx::query("INSERT OR IGNORE INTO results (machine, decision) VALUES($1, NULL)")
         .bind(&array[..])
         .execute(conn)

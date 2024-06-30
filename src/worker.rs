@@ -13,10 +13,10 @@ pub type ReceiverProcessorQueue = Receiver<WorkerResult>;
 pub type SenderWorkerQueue = Sender<WorkUnit>;
 pub type ReceiverWorkerQueue = Receiver<WorkUnit>;
 
-pub fn with_starting_queue(tables: Vec<WorkUnit>) -> (ReceiverWorkerQueue, SenderWorkerQueue) {
+pub fn with_starting_queue(machines: Vec<WorkUnit>) -> (ReceiverWorkerQueue, SenderWorkerQueue) {
     let (send, recv) = crossbeam::channel::unbounded();
-    for table in tables {
-        send.send(table).unwrap();
+    for machine in machines {
+        send.send(machine).unwrap();
     }
     (recv, send)
 }
@@ -44,7 +44,7 @@ impl WorkerResult {
     /// The work unit's and node's [MachineTable]s must match or else a panic occurs. The statistics are
     /// taken from the node node.
     pub fn new(work_unit: WorkUnit, node: &DecidedNode) -> WorkerResult {
-        assert_eq!(work_unit.machine(), node.table);
+        assert_eq!(work_unit.machine(), node.machine);
         WorkerResult {
             work_unit,
             decision: node.decision.clone(),

@@ -58,20 +58,20 @@ fn get_machines(
         Ok(action)
     }
 
-    fn parse_table(table: [u8; 30]) -> io::Result<MachineTable> {
-        let table = MachineTableStruct {
-            state_a_0: parse_transition(table[0..3].try_into().unwrap())?,
-            state_a_1: parse_transition(table[3..6].try_into().unwrap())?,
-            state_b_0: parse_transition(table[6..9].try_into().unwrap())?,
-            state_b_1: parse_transition(table[9..12].try_into().unwrap())?,
-            state_c_0: parse_transition(table[12..15].try_into().unwrap())?,
-            state_c_1: parse_transition(table[15..18].try_into().unwrap())?,
-            state_d_0: parse_transition(table[18..21].try_into().unwrap())?,
-            state_d_1: parse_transition(table[21..24].try_into().unwrap())?,
-            state_e_0: parse_transition(table[24..27].try_into().unwrap())?,
-            state_e_1: parse_transition(table[27..30].try_into().unwrap())?,
+    fn parse_machine(machine: [u8; 30]) -> io::Result<MachineTable> {
+        let machine = MachineTableStruct {
+            state_a_0: parse_transition(machine[0..3].try_into().unwrap())?,
+            state_a_1: parse_transition(machine[3..6].try_into().unwrap())?,
+            state_b_0: parse_transition(machine[6..9].try_into().unwrap())?,
+            state_b_1: parse_transition(machine[9..12].try_into().unwrap())?,
+            state_c_0: parse_transition(machine[12..15].try_into().unwrap())?,
+            state_c_1: parse_transition(machine[15..18].try_into().unwrap())?,
+            state_d_0: parse_transition(machine[18..21].try_into().unwrap())?,
+            state_d_1: parse_transition(machine[21..24].try_into().unwrap())?,
+            state_e_0: parse_transition(machine[24..27].try_into().unwrap())?,
+            state_e_1: parse_transition(machine[27..30].try_into().unwrap())?,
         };
-        Ok(MachineTable::from(table))
+        Ok(MachineTable::from(machine))
     }
 
     let undecided = File::open(path)?;
@@ -97,21 +97,21 @@ fn get_machines(
     assert_eq!(header.total_undecided, 88_664_064);
     assert!(header.lexiographically_sorted);
 
-    let mut tables = vec![];
+    let mut machines = vec![];
 
     let thread_rng = &mut StdRng::seed_from_u64(seed);
     for _ in 0..num_machines {
         let index: u64 = thread_rng.gen_range(0..header.total_undecided).into();
         bytes.seek(io::SeekFrom::Start(index * 30 + 30))?;
 
-        let mut table = [0; 30];
-        bytes.read_exact(&mut table)?;
+        let mut machine = [0; 30];
+        bytes.read_exact(&mut machine)?;
 
-        let table = parse_table(table)?;
-        tables.push(table);
+        let machine = parse_machine(machine)?;
+        machines.push(machine);
     }
 
-    Ok(tables)
+    Ok(machines)
 }
 
 fn random_bench() {
@@ -119,8 +119,8 @@ fn random_bench() {
     const SEED: u64 = 413; // 413 is the most cryptographically secure seed. fully suitable for gambling games
                            // (source: https://rust-random.github.io/book/guide-seeding.html#a-simple-number)
 
-    let tables = get_machines("undecided.bin", NUM_MACHINES, SEED).unwrap();
-    let nodes = tables.iter().map(|&table| PendingNode::new(table));
+    let machines = get_machines("undecided.bin", NUM_MACHINES, SEED).unwrap();
+    let nodes = machines.iter().map(|&machine| PendingNode::new(machine));
     println!("Deciding {} machines", NUM_MACHINES);
 
     let now = Instant::now();

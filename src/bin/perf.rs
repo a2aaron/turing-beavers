@@ -16,8 +16,8 @@ pub fn with_starting_queue(
 }
 
 pub fn new_queue() -> (Receiver<MachineTable>, Sender<MachineTable>) {
-    let table = MachineTable::from_str(STARTING_MACHINE).unwrap();
-    with_starting_queue(vec![table])
+    let machine = MachineTable::from_str(STARTING_MACHINE).unwrap();
+    with_starting_queue(vec![machine])
 }
 
 pub fn add_work_to_queue(

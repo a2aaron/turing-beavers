@@ -11,7 +11,7 @@ impl Transition {
         // self.into_tuple_bitfield() // slower
     }
 }
-// pub type Table = TableStruct; // slower
+// pub type MachineTable = MachineTableStruct; // slower
 pub type MachineTable = MachineTableArray;
 
 impl Tape {
@@ -258,13 +258,13 @@ fn action_into_u8(action: Action) -> u8 {
     }
 }
 
-/// The transition table. Note that this is written to allow for ease with enumerating transition
-/// tables. An [Action] which is None is used to represent that a particular transition is unusued or
+/// The transition table. Note that this is written to allow for ease with enumerating transition tables.
+/// An [Action] which is None is used to represent that a particular transition is unusued or
 /// unreachable (and hence could be replaced by any Transition without affecting the behavior of the
 /// machine). When simulated on a [Tape], empty Actions are assumed to immediately halt without
 /// performing any changes to the Tape.
 ///
-/// Each field in this table is named after the [State] + [Symbol] combination that the transition rule
+/// Each field in this transition table is named after the [State] + [Symbol] combination that the transition rule
 /// is for. For example, `state_d_1` is the transition rule for when the Turing machine reads a
 /// [Symbol::One] in [State::D]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,7 +314,7 @@ impl MachineTableStruct {
         }
     }
 
-    /// Returns the number of transitions which are defined on the table.
+    /// Returns the number of transitions which are defined on the transition table.
     pub fn defined_transitions(&self) -> usize {
         self.state_a_0.is_some() as usize
             + self.state_a_1.is_some() as usize
@@ -328,7 +328,7 @@ impl MachineTableStruct {
             + self.state_e_1.is_some() as usize
     }
 
-    /// Returns the number of states which are visited in this table. This will give how many
+    /// Returns the number of states which are visited in this transition table. This will give how many
     /// states were visited since we only define a state transition as a machien is about to
     /// visit it.
     pub fn visited_states(&self) -> usize {
@@ -462,18 +462,18 @@ impl Display for MachineTableStruct {
 }
 
 impl From<MachineTableArray> for MachineTableStruct {
-    fn from(table: MachineTableArray) -> Self {
+    fn from(machine: MachineTableArray) -> Self {
         MachineTableStruct {
-            state_a_0: table.0[0],
-            state_a_1: table.0[1],
-            state_b_0: table.0[2],
-            state_b_1: table.0[3],
-            state_c_0: table.0[4],
-            state_c_1: table.0[5],
-            state_d_0: table.0[6],
-            state_d_1: table.0[7],
-            state_e_0: table.0[8],
-            state_e_1: table.0[9],
+            state_a_0: machine.0[0],
+            state_a_1: machine.0[1],
+            state_b_0: machine.0[2],
+            state_b_1: machine.0[3],
+            state_c_0: machine.0[4],
+            state_c_1: machine.0[5],
+            state_d_0: machine.0[6],
+            state_d_1: machine.0[7],
+            state_e_0: machine.0[8],
+            state_e_1: machine.0[9],
         }
     }
 }
@@ -497,7 +497,7 @@ impl MachineTableArray {
         &mut self.0[index]
     }
 
-    /// Returns the number of transitions which are defined on the table.
+    /// Returns the number of transitions which are defined on the transition table.
     pub fn defined_transitions(&self) -> usize {
         self.0[0].is_some() as usize
             + self.0[1].is_some() as usize
@@ -511,16 +511,16 @@ impl MachineTableArray {
             + self.0[9].is_some() as usize
     }
 
-    /// Returns the number of states which are visited in this table. This will give how many
+    /// Returns the number of states which are visited in this transition table. This will give how many
     /// states were visited since we only define a state transition as a machien is about to
     /// visit it.
     pub fn visited_states(&self) -> usize {
-        let table = self.0;
-        let a_visited = table[0].is_some() || table[1].is_some();
-        let b_visited = table[2].is_some() || table[3].is_some();
-        let c_visited = table[4].is_some() || table[5].is_some();
-        let d_visited = table[6].is_some() || table[7].is_some();
-        let e_visited = table[8].is_some() || table[9].is_some();
+        let machine = self.0;
+        let a_visited = machine[0].is_some() || machine[1].is_some();
+        let b_visited = machine[2].is_some() || machine[3].is_some();
+        let c_visited = machine[4].is_some() || machine[5].is_some();
+        let d_visited = machine[6].is_some() || machine[7].is_some();
+        let e_visited = machine[8].is_some() || machine[9].is_some();
 
         a_visited as usize
             + b_visited as usize
@@ -543,26 +543,26 @@ impl MachineTableArray {
 }
 
 impl From<MachineTableArray> for [u8; 7] {
-    fn from(table: MachineTableArray) -> Self {
-        // We start with u64. Each element of the TableArray is packed into 5 bits. The top 14 bits are unusued
+    fn from(machine: MachineTableArray) -> Self {
+        // We start with u64. Each element of the MachineTableArray is packed into 5 bits. The top 14 bits are unusued
         // 000000000000000000000000000000 00000 00000 00000 00000 00000 00000 00000 00000 00000 00000
         // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^
-        // |                                |     |     |     |     |     |     |     |     |     +-- table.0[0] (5 bits)
-        // |                                |     |     |     |     |     |     |     |     +-------- table.0[1] (5 bits)
-        // |                                |     |     |     |     |     |     |     +-------------- table.0[2] (5 bits)
-        // |                                |     |     |     |     |     |     + ------------------- table.0[3] (5 bits)
-        // |                                |     |     |     |     |     +-------------------------- table.0[4] (5 bits)
-        // |                                |     |     |     |     +-------------------------------- table.0[5] (5 bits)
-        // |                                |     |     |     +-------------------------------------- table.0[6] (5 bits)
-        // |                                |     |     +-------------------------------------------- table.0[7] (5 bits)
-        // |                                |     +-------------------------------------------------- table.0[8] (5 bits)
-        // |                                +-------------------------------------------------------- table.0[9] (5 bits)
-        // +----------------------------------------------------------------------------------------- unused     (14 bits)
+        // |                                |     |     |     |     |     |     |     |     |     +-- machine.0[0] (5 bits)
+        // |                                |     |     |     |     |     |     |     |     +-------- machine.0[1] (5 bits)
+        // |                                |     |     |     |     |     |     |     +-------------- machine.0[2] (5 bits)
+        // |                                |     |     |     |     |     |     + ------------------- machine.0[3] (5 bits)
+        // |                                |     |     |     |     |     +-------------------------- machine.0[4] (5 bits)
+        // |                                |     |     |     |     +-------------------------------- machine.0[5] (5 bits)
+        // |                                |     |     |     +-------------------------------------- machine.0[6] (5 bits)
+        // |                                |     |     +-------------------------------------------- machine.0[7] (5 bits)
+        // |                                |     +-------------------------------------------------- machine.0[8] (5 bits)
+        // |                                +-------------------------------------------------------- machine.0[9] (5 bits)
+        // +----------------------------------------------------------------------------------------- unused       (14 bits)
         let mut x = 0;
 
-        for i in 0..table.0.len() {
+        for i in 0..machine.0.len() {
             // bits is a u64 between 0 and 25, and hence fits into 5 bits
-            let bits = action_into_u8(table.0[i]) as u64;
+            let bits = action_into_u8(machine.0[i]) as u64;
             x |= bits << i * 5;
         }
 
@@ -585,12 +585,12 @@ impl TryFrom<[u8; 7]> for MachineTableArray {
             array[0], array[1], array[2], array[3], array[4], array[5], array[6], 0,
         ];
         let mut x = u64::from_le_bytes(array);
-        let mut table = MachineTableArray([None; 10]);
-        for i in 0..table.0.len() {
+        let mut machine = MachineTableArray([None; 10]);
+        for i in 0..machine.0.len() {
             // Get lower
             let lower_5 = (x & 0b000_11111) as u8;
             let action = action_from_u8(lower_5)?;
-            table.0[i] = action;
+            machine.0[i] = action;
 
             // Shift next five bits down
             x = x >> 5;
@@ -600,14 +600,14 @@ impl TryFrom<[u8; 7]> for MachineTableArray {
         if x != 0 {
             Err(format!("Expected 14 bits to remain unset. Got {}", x))
         } else {
-            Ok(table)
+            Ok(machine)
         }
     }
 }
 
 impl From<MachineTableArray> for [u8; 10] {
-    fn from(table: MachineTableArray) -> Self {
-        let array = table.0;
+    fn from(machine: MachineTableArray) -> Self {
+        let array = machine.0;
         array.map(|action| action_into_u8(action))
     }
 }
@@ -641,18 +641,18 @@ impl TryFrom<&[u8]> for MachineTableArray {
 }
 
 impl From<MachineTableStruct> for MachineTableArray {
-    fn from(table: MachineTableStruct) -> Self {
+    fn from(machine: MachineTableStruct) -> Self {
         MachineTableArray([
-            table.state_a_0,
-            table.state_a_1,
-            table.state_b_0,
-            table.state_b_1,
-            table.state_c_0,
-            table.state_c_1,
-            table.state_d_0,
-            table.state_d_1,
-            table.state_e_0,
-            table.state_e_1,
+            machine.state_a_0,
+            machine.state_a_1,
+            machine.state_b_0,
+            machine.state_b_1,
+            machine.state_c_0,
+            machine.state_c_1,
+            machine.state_d_0,
+            machine.state_d_1,
+            machine.state_e_0,
+            machine.state_e_1,
         ])
     }
 }
@@ -942,13 +942,13 @@ mod test {
     }
 
     #[test]
-    fn test_table() {
+    fn test_machine_tables_are_equivalent() {
         let s = "1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA";
-        let table = MachineTableStruct::from_str(s).unwrap();
-        let table2 = MachineTableArray::from_str(s).unwrap();
+        let machine = MachineTableStruct::from_str(s).unwrap();
+        let machine2 = MachineTableArray::from_str(s).unwrap();
 
-        assert_eq!(table, MachineTableStruct::from(table2));
-        assert_eq!(MachineTableArray::from(table), table2);
+        assert_eq!(machine, MachineTableStruct::from(machine2));
+        assert_eq!(MachineTableArray::from(machine), machine2);
 
         let state_symbols = [
             (State::A, Symbol::Zero),
@@ -963,49 +963,52 @@ mod test {
             (State::E, Symbol::One),
         ];
         for (state, symbol) in state_symbols {
-            assert_eq!(table.get(state, symbol), table2.get(state, symbol))
+            assert_eq!(machine.get(state, symbol), machine2.get(state, symbol))
         }
     }
 
     #[test]
-    fn test_table_2() {
+    fn test_machine_tables_are_equivalent_2() {
         let s = "1RB---_1RC1RB_---0LE_1LA1LD_------";
-        let table = MachineTableStruct::from_str(s).unwrap();
-        let table2 = MachineTableArray::from_str(s).unwrap();
+        let machine = MachineTableStruct::from_str(s).unwrap();
+        let machine2 = MachineTableArray::from_str(s).unwrap();
 
-        assert_eq!(table.visited_states(), table2.visited_states());
-        assert_eq!(table.defined_transitions(), table2.defined_transitions());
+        assert_eq!(machine.visited_states(), machine2.visited_states());
+        assert_eq!(
+            machine.defined_transitions(),
+            machine2.defined_transitions()
+        );
     }
 
     proptest! {
         #[test]
-        fn test_tablearray_into_array(table: MachineTableArray) {
-            let array = <[u8; 10]>::from(table);
-            let table2 = MachineTableArray::try_from(array).unwrap();
-            prop_assert_eq!(table, table2);
+        fn test_machinetablearray_into_array(machine: MachineTableArray) {
+            let array = <[u8; 10]>::from(machine);
+            let machine2 = MachineTableArray::try_from(array).unwrap();
+            prop_assert_eq!(machine, machine2);
         }
 
         #[test]
-        fn test_tablearray_into_slice(table: MachineTableArray) {
-            let array = <[u8; 10]>::from(table);
+        fn test_machinetablearray_into_slice(machine: MachineTableArray) {
+            let array = <[u8; 10]>::from(machine);
             let slice: &[u8] = array.as_slice();
-            let table2 = MachineTableArray::try_from(slice).unwrap();
-            prop_assert_eq!(table, table2);
+            let machine2 = MachineTableArray::try_from(slice).unwrap();
+            prop_assert_eq!(machine, machine2);
         }
 
         #[test]
-        fn test_tablearray_into_array_into_packed_array(table: MachineTableArray) {
-            let array = <[u8; 7]>::from(table);
-            let table2 = MachineTableArray::try_from(array).unwrap();
-            prop_assert_eq!(table, table2);
+        fn test_machinetablearray_into_array_into_packed_array(machine: MachineTableArray) {
+            let array = <[u8; 7]>::from(machine);
+            let machine2 = MachineTableArray::try_from(array).unwrap();
+            prop_assert_eq!(machine, machine2);
         }
 
         #[test]
-        fn test_tablearray_into_slice2(table: MachineTableArray) {
-            let array = <[u8; 7]>::from(table);
+        fn test_machinetablearray_into_slice2(machine: MachineTableArray) {
+            let array = <[u8; 7]>::from(machine);
             let slice: &[u8] = array.as_slice();
-            let table2 = MachineTableArray::try_from(slice).unwrap();
-            prop_assert_eq!(table, table2);
+            let machine2 = MachineTableArray::try_from(slice).unwrap();
+            prop_assert_eq!(machine, machine2);
         }
     }
 }
