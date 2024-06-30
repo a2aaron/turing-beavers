@@ -188,7 +188,7 @@ impl ResultObject {
     }
 
     /// Retrieve all results from the database
-    pub async fn get_rows(
+    pub async fn get_all_rows(
         conn: &mut SqliteConnection,
     ) -> impl Stream<Item = Result<ResultObject, sqlx::Error>> + '_ {
         #[derive(FromRow)]

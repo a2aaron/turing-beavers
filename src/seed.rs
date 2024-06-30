@@ -106,7 +106,7 @@ impl RunStats {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingNode {
     pub table: MachineTable,
     pub tape: Tape,
@@ -210,6 +210,7 @@ impl PendingNode {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct DecidedNode {
     pub table: MachineTable,
     pub decision: MachineDecision,
@@ -242,7 +243,7 @@ pub fn add_work_to_queue(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineDecision {
     Halting,
     NonHalting,
@@ -319,6 +320,8 @@ fn get_target_states(table: &MachineTable) -> Vec<State> {
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
+
+    use smol::io::empty;
 
     use crate::{
         seed::{
@@ -502,5 +505,88 @@ mod test {
         // runs for one less step than actual for probably silly reasons.
         assert_eq!(node.stats.space_used(), SPACE_LIMIT);
         assert_eq!(node.stats.steps_ran, SPACE_LIMIT - 1);
+    }
+
+    #[test]
+    fn test_simple_halt() {
+        let table = MachineTable::from_str("1RB---_1RC---_1RD---_1RE---_1RZ---").unwrap();
+        let mut node = PendingNode::new(table);
+        let reason = node.run(None, None);
+        assert_eq!(reason, HaltReason::HaltState);
+        // Step 0:
+        // 0 0 0 0 0 0
+        // ^ A
+
+        // Step 1:
+        // 1 0 0 0 0 0
+        //   ^ B
+
+        // Step 2:
+        // 1 1 0 0 0 0
+        //     ^ C
+
+        // Step 3:
+        // 1 1 1 0 0 0
+        //       ^ D
+
+        // Step 4:
+        // 1 1 1 1 1 0
+        //         ^ E
+
+        // Step 5:
+        // 1 1 1 1 1 0
+        //           ^ Z
+        assert_eq!(node.stats.space_used(), 6);
+        assert_eq!(node.stats.steps_ran, 5);
+    }
+
+    #[test]
+    fn test_decide_fresh_empty_transitions() {
+        let table = MachineTable::from_str("1RB---_1RC---_1RD---_1RE---_1LD---").unwrap();
+        let mut node = PendingNode::new(table);
+        // Step 0:
+        // 0 0 0 0 0
+        // ^ A
+
+        // Step 1:
+        // 1 0 0 0 0
+        //   ^ B
+
+        // Step 2:
+        // 1 1 0 0 0
+        //     ^ C
+
+        // Step 3:
+        // 1 1 1 0 0
+        //       ^ D
+
+        // Step 4:
+        // 1 1 1 1 1
+        //         ^ E
+
+        // Step 5:
+        // 1 1 1 1 1
+        //       ^ D (no transition for D1)
+
+        let reason = node.decide();
+
+        let empty_transition = if let MachineDecision::EmptyTransition(empty) = reason.decision {
+            empty
+        } else {
+            unreachable!()
+        };
+
+        for mut empty in empty_transition {
+            let mut fresh_empty = PendingNode::new(empty.table);
+            let fresh_empty = fresh_empty.decide();
+            let empty = empty.decide();
+
+            assert_eq!(
+                empty.stats.get_total_steps(),
+                fresh_empty.stats.get_total_steps()
+            );
+            assert_eq!(empty.stats.space_used(), fresh_empty.stats.space_used());
+            assert_eq!(empty.decision, fresh_empty.decision);
+        }
     }
 }
