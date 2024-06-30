@@ -3,7 +3,7 @@ use std::{path::Path, str::FromStr};
 use smol::stream::{Stream, StreamExt};
 use sqlx::{
     database::HasValueRef, prelude::FromRow, sqlite::SqliteConnectOptions, Acquire, ConnectOptions,
-    Database, Decode, Encode, Sqlite, SqliteConnection, Transaction,
+    Database, Decode, Encode, Sqlite, SqliteConnection,
 };
 
 use crate::{
@@ -126,6 +126,19 @@ pub struct StatsRow {
     pub space: u32,
 }
 
+impl StatsRow {
+    async fn insert(&self, conn: &mut SqliteConnection) -> SqlResult<()> {
+        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
+            .bind(self.results_id)
+            .bind(self.steps)
+            .bind(self.space)
+            .execute(conn)
+            .await?;
+        assert_eq!(result.rows_affected(), 1);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // An undecided row that does not yet exist in the database.
 pub struct UninsertedPendingRow {
@@ -181,10 +194,8 @@ impl InsertedPendingRow {
     ) -> SqlResult<InsertedDecidedRow> {
         let mut txn = conn.begin().await?;
 
-        let table = PackedTable::from(self.machine);
-        let steps = stats.get_total_steps() as u32;
-        let space = stats.space_used() as u32;
         // Update decision row
+        let table = PackedTable::from(self.machine);
         let result = sqlx::query("UPDATE results SET decision = $2 WHERE machine = $1")
             .bind(&table[..])
             .bind(decision)
@@ -193,13 +204,12 @@ impl InsertedPendingRow {
         assert_eq!(result.rows_affected(), 1);
 
         // Now actually insert the stats
-        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
-            .bind(self.id)
-            .bind(steps)
-            .bind(space)
-            .execute(&mut *txn)
-            .await?;
-        assert_eq!(result.rows_affected(), 1);
+        let stats_row = StatsRow {
+            steps: stats.get_total_steps() as u32,
+            space: stats.space_used() as u32,
+            results_id: self.id,
+        };
+        stats_row.insert(&mut txn).await?;
 
         txn.commit().await?;
 
@@ -207,8 +217,8 @@ impl InsertedPendingRow {
             id: self.id,
             machine: self.machine,
             decision,
-            steps,
-            space,
+            steps: stats.get_total_steps() as u32,
+            space: stats.space_used() as u32,
         })
     }
 
@@ -264,13 +274,13 @@ impl InsertedDecidedRow {
                 .execute(&mut *txn)
                 .await?;
         assert_eq!(result.rows_affected(), 1);
-        let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
-            .bind(self.id)
-            .bind(self.steps)
-            .bind(self.space)
-            .execute(&mut *txn)
-            .await?;
-        assert_eq!(result.rows_affected(), 1);
+
+        let stats_row = StatsRow {
+            results_id: self.id,
+            steps: self.steps,
+            space: self.space,
+        };
+        stats_row.insert(&mut txn).await?;
 
         txn.commit().await
     }
