@@ -1,5 +1,35 @@
-use std::time::Instant;
-use turing_beavers::seed::{add_work_to_queue, new_queue, MachineDecision};
+use crossbeam::channel::{Receiver, SendError, Sender};
+use std::{str::FromStr, time::Instant};
+use turing_beavers::{
+    seed::{MachineDecision, PendingNode, STARTING_MACHINE},
+    turing::MachineTable,
+};
+
+pub fn with_starting_queue(
+    tables: Vec<MachineTable>,
+) -> (Receiver<PendingNode>, Sender<PendingNode>) {
+    let (send, recv) = crossbeam::channel::unbounded();
+    for table in tables {
+        let machine = PendingNode::new(table);
+        send.send(machine).unwrap();
+    }
+    (recv, send)
+}
+
+pub fn new_queue() -> (Receiver<PendingNode>, Sender<PendingNode>) {
+    let table = MachineTable::from_str(STARTING_MACHINE).unwrap();
+    with_starting_queue(vec![table])
+}
+
+pub fn add_work_to_queue(
+    sender: &Sender<PendingNode>,
+    nodes: Vec<PendingNode>,
+) -> Result<(), SendError<PendingNode>> {
+    for node in nodes {
+        sender.send(node)?;
+    }
+    Ok(())
+}
 
 fn run(num_machines: usize) {
     let (recv, send) = new_queue();

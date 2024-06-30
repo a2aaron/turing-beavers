@@ -11,19 +11,48 @@ use std::{
 };
 
 use clap::{arg, Parser};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::{Receiver, SendError, Sender};
 use smol::block_on;
 use sqlx::{Connection, SqliteConnection};
 use turing_beavers::{
-    seed::{
-        add_work_to_queue, with_starting_queue, DecidedNode, MachineDecision, PendingNode, RunStats,
-    },
+    seed::{MachineDecision, RunStats},
     sql::{
-        create_tables, get_connection, get_pending_queue, insert_initial_row, submit_result,
-        ConnectionMode,
+        create_tables, get_connection, insert_initial_row, ConnectionMode, InsertedPendingRow,
+        RowCounts, WorkerResult,
     },
-    turing::{MachineTable, MachineTableArray},
 };
+
+type SenderProcessorQueue = Sender<WorkerResult>;
+type ReceiverProcessorQueue = Receiver<WorkerResult>;
+
+type SenderWorkerQueue = Sender<InsertedPendingRow>;
+type ReceiverWorkerQueue = Receiver<InsertedPendingRow>;
+
+type SenderProcessorStatsQueue = Sender<ProcessorStats>;
+type ReceiverProcessorStatsQueue = Receiver<ProcessorStats>;
+
+type SenderWorkerStatsQueue = Sender<(MachineDecision, RunStats)>;
+type ReceiverWorkerStatsQueue = Receiver<(MachineDecision, RunStats)>;
+
+pub fn with_starting_queue(
+    tables: Vec<InsertedPendingRow>,
+) -> (ReceiverWorkerQueue, SenderWorkerQueue) {
+    let (send, recv) = crossbeam::channel::unbounded();
+    for table in tables {
+        send.send(table).unwrap();
+    }
+    (recv, send)
+}
+
+pub fn add_work_to_queue(
+    sender: &SenderWorkerQueue,
+    rows: Vec<InsertedPendingRow>,
+) -> Result<(), SendError<InsertedPendingRow>> {
+    for row in rows {
+        sender.send(row)?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy)]
 struct WorkerStats {
@@ -64,10 +93,10 @@ impl WorkerStats {
 
 #[derive(Debug, Clone, Copy)]
 struct ProcessorStats {
-    // The number of unprocessed decided nodes
+    // The number of unprocessed decided rows
     unprocessed: usize,
     rows_written: usize,
-    // The number of pending nodes
+    // The number of pending rows
     pending: Option<usize>,
 }
 
@@ -156,8 +185,8 @@ impl Stats {
 }
 
 fn run_stats_printer(
-    recv_processor: Receiver<ProcessorStats>,
-    recv_worker: Receiver<(MachineDecision, RunStats)>,
+    recv_processor: ReceiverProcessorStatsQueue,
+    recv_worker: ReceiverWorkerStatsQueue,
 ) {
     let mut last_printed_at = Instant::now();
     let mut stats = Stats::new();
@@ -180,25 +209,20 @@ fn run_stats_printer(
 async fn run_processor(
     mut conn: SqliteConnection,
     state: Arc<SharedThreadState>,
-    send_stats: Sender<ProcessorStats>,
-    send_pending: Sender<PendingNode>,
-    recv_decided: Receiver<DecidedNode>,
+    send_stats: SenderProcessorStatsQueue,
+    send_pending: SenderWorkerQueue,
+    recv_decided: ReceiverProcessorQueue,
 ) {
     let mut sender_closed = false;
-    while let Ok(node) = recv_decided.recv() {
-        let rows_written = submit_result(&mut conn, &node).await.unwrap();
-        match node.decision {
-            MachineDecision::EmptyTransition(nodes) => {
-                if !sender_closed && let Err(_) = add_work_to_queue(&send_pending, nodes) {
-                    println!("Processor -- send_pending closed, no longer adding work to queue");
-                    sender_closed = true;
-                };
-            }
-            MachineDecision::Halting => (),
-            MachineDecision::NonHalting => (),
-            MachineDecision::UndecidedStepLimit => (),
-            MachineDecision::UndecidedSpaceLimit => (),
-        }
+    while let Ok(worker_result) = recv_decided.recv() {
+        let (_decided_row, child_rows) = worker_result.submit(&mut conn).await.unwrap();
+        let rows_written = 1 + child_rows.len();
+
+        if !sender_closed && let Err(_) = add_work_to_queue(&send_pending, child_rows) {
+            println!("Processor -- send_pending closed, no longer adding work to queue");
+            sender_closed = true;
+        };
+
         let unprocessed = recv_decided.len();
         let pending = if sender_closed {
             None
@@ -221,10 +245,10 @@ async fn run_processor(
             break;
         }
     }
-    let remaining_queue_length = get_pending_queue(&mut conn).await.unwrap().len();
+    let remaining_pending = RowCounts::get_counts(&mut conn).await.pending;
     println!(
-        "Processor -- exiting with {} queued machines written to database",
-        remaining_queue_length
+        "Processor -- exiting with {} pending machines written to database",
+        remaining_pending
     );
     conn.close()
         .await
@@ -234,15 +258,17 @@ async fn run_processor(
 fn run_decider_worker(
     thread_id: usize,
     state: Arc<SharedThreadState>,
-    send_stats: Sender<(MachineDecision, RunStats)>,
-    send_decided: Sender<DecidedNode>,
-    recv_pending: Receiver<PendingNode>,
+    send_stats: SenderWorkerStatsQueue,
+    send_decided: SenderProcessorQueue,
+    recv_pending: ReceiverWorkerQueue,
 ) {
-    while let Ok(mut node) = recv_pending.recv() {
-        let result = node.decide();
+    while let Ok(pending_row) = recv_pending.recv() {
+        let result = pending_row.into_node().decide();
         send_stats
             .send((result.decision.clone(), result.stats))
             .unwrap();
+
+        let result = WorkerResult::new(pending_row, &result);
         match send_decided.send(result) {
             Ok(()) => (),
             Err(_) => {
@@ -283,7 +309,7 @@ impl SharedThreadState {
 async fn init_connection(
     file: impl AsRef<Path>,
     is_new_database: bool,
-) -> (SqliteConnection, Vec<MachineTable>) {
+) -> (SqliteConnection, Vec<InsertedPendingRow>) {
     let mut conn = if is_new_database {
         println!("Creating initial database file at {:?}", file.as_ref());
         let mut conn: SqliteConnection = get_connection(file, ConnectionMode::WriteNew)
@@ -300,7 +326,9 @@ async fn init_connection(
             .unwrap()
     };
 
-    let starting_queue = get_pending_queue(&mut conn).await.unwrap();
+    let starting_queue = InsertedPendingRow::get_pending_queue(&mut conn)
+        .await
+        .unwrap();
     (conn, starting_queue)
 }
 
@@ -312,7 +340,7 @@ fn install_ctrlc_handler(state: Arc<SharedThreadState>) {
 }
 
 fn start_threads(
-    starting_queue: Vec<MachineTableArray>,
+    starting_queue: Vec<InsertedPendingRow>,
     conn: SqliteConnection,
     num_workers: usize,
     state: Arc<SharedThreadState>,
@@ -385,9 +413,10 @@ fn main() {
     println!("Starting queue size: {}", starting_queue.len());
 
     let starting_queue = if args.sort_halted_first {
-        let (mut halts, mut not_halts): (Vec<MachineTable>, Vec<MachineTable>) = starting_queue
-            .iter()
-            .partition(|table| table.contains_halt_transition());
+        let (mut halts, mut not_halts): (Vec<InsertedPendingRow>, Vec<InsertedPendingRow>) =
+            starting_queue
+                .iter()
+                .partition(|table| table.machine.contains_halt_transition());
         halts.append(&mut not_halts);
         halts
     } else {

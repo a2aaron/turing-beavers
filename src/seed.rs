@@ -1,7 +1,3 @@
-use std::str::FromStr;
-
-use crossbeam::channel::{Receiver, SendError, Sender};
-
 use crate::turing::{Direction, MachineTable, State, Symbol, Tape, Transition};
 
 /// The number of steps that the 4-State 2-Symbol Busy Beaver champion runs for before halting.
@@ -212,32 +208,6 @@ pub struct DecidedNode {
     pub stats: RunStats,
 }
 
-pub fn with_starting_queue(
-    tables: Vec<MachineTable>,
-) -> (Receiver<PendingNode>, Sender<PendingNode>) {
-    let (send, recv) = crossbeam::channel::unbounded();
-    for table in tables {
-        let machine = PendingNode::new(table);
-        send.send(machine).unwrap();
-    }
-    (recv, send)
-}
-
-pub fn new_queue() -> (Receiver<PendingNode>, Sender<PendingNode>) {
-    let table = MachineTable::from_str(STARTING_MACHINE).unwrap();
-    with_starting_queue(vec![table])
-}
-
-pub fn add_work_to_queue(
-    sender: &Sender<PendingNode>,
-    nodes: Vec<PendingNode>,
-) -> Result<(), SendError<PendingNode>> {
-    for node in nodes {
-        sender.send(node)?;
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineDecision {
     Halting,
@@ -314,8 +284,7 @@ mod test {
 
     use crate::{
         seed::{
-            new_queue, HaltReason, MachineDecision, PendingNode, BB5_SPACE, BB5_STEPS, SPACE_LIMIT,
-            TIME_LIMIT,
+            HaltReason, MachineDecision, PendingNode, BB5_SPACE, BB5_STEPS, SPACE_LIMIT, TIME_LIMIT,
         },
         turing::{MachineTable, State, Symbol},
     };
@@ -336,17 +305,6 @@ mod test {
         assert_eq!(halt_reason, HaltReason::HaltState);
         assert_eq!(node.stats.steps_ran, BB5_STEPS);
         assert_eq!(node.stats.space_used(), BB5_SPACE);
-    }
-
-    #[test]
-    fn test_decide() {
-        let (recv, _send) = new_queue();
-        let mut node = recv.recv().unwrap();
-        let result = node.decide();
-        assert!(matches!(
-            result.decision,
-            MachineDecision::EmptyTransition(_)
-        ));
     }
 
     #[test]
