@@ -11,48 +11,26 @@ use std::{
 };
 
 use clap::{arg, Parser};
-use crossbeam::channel::{Receiver, SendError, Sender};
+use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
 use sqlx::{Connection, SqliteConnection};
 use turing_beavers::{
-    seed::{MachineDecision, RunStats},
+    seed::{MachineDecision, PendingNode, RunStats},
     sql::{
-        create_tables, get_connection, insert_initial_row, ConnectionMode, InsertedPendingRow,
-        RowCounts, WorkerResult,
+        create_tables, get_connection, insert_initial_row, ConnectionMode, InsertedDecidedRow,
+        InsertedPendingRow, InsertedRow, RowCounts,
+    },
+    worker::{
+        add_work_to_queue, with_starting_queue, ReceiverProcessorQueue, ReceiverWorkerQueue,
+        SenderProcessorQueue, SenderWorkerQueue, WorkUnit, WorkerResult,
     },
 };
-
-type SenderProcessorQueue = Sender<WorkerResult>;
-type ReceiverProcessorQueue = Receiver<WorkerResult>;
-
-type SenderWorkerQueue = Sender<InsertedPendingRow>;
-type ReceiverWorkerQueue = Receiver<InsertedPendingRow>;
 
 type SenderProcessorStatsQueue = Sender<ProcessorStats>;
 type ReceiverProcessorStatsQueue = Receiver<ProcessorStats>;
 
 type SenderWorkerStatsQueue = Sender<(MachineDecision, RunStats)>;
 type ReceiverWorkerStatsQueue = Receiver<(MachineDecision, RunStats)>;
-
-pub fn with_starting_queue(
-    tables: Vec<InsertedPendingRow>,
-) -> (ReceiverWorkerQueue, SenderWorkerQueue) {
-    let (send, recv) = crossbeam::channel::unbounded();
-    for table in tables {
-        send.send(table).unwrap();
-    }
-    (recv, send)
-}
-
-pub fn add_work_to_queue(
-    sender: &SenderWorkerQueue,
-    rows: Vec<InsertedPendingRow>,
-) -> Result<(), SendError<InsertedPendingRow>> {
-    for row in rows {
-        sender.send(row)?;
-    }
-    Ok(())
-}
 
 #[derive(Debug, Clone, Copy)]
 struct WorkerStats {
@@ -262,13 +240,13 @@ fn run_decider_worker(
     send_decided: SenderProcessorQueue,
     recv_pending: ReceiverWorkerQueue,
 ) {
-    while let Ok(pending_row) = recv_pending.recv() {
-        let result = pending_row.into_node().decide();
+    while let Ok(work_unit) = recv_pending.recv() {
+        let result = PendingNode::new(work_unit.machine()).decide();
         send_stats
             .send((result.decision.clone(), result.stats))
             .unwrap();
 
-        let result = WorkerResult::new(pending_row, &result);
+        let result = WorkerResult::new(work_unit, &result);
         match send_decided.send(result) {
             Ok(()) => (),
             Err(_) => {
@@ -306,11 +284,8 @@ impl SharedThreadState {
     }
 }
 
-async fn init_connection(
-    file: impl AsRef<Path>,
-    is_new_database: bool,
-) -> (SqliteConnection, Vec<InsertedPendingRow>) {
-    let mut conn = if is_new_database {
+async fn init_connection(file: impl AsRef<Path>, is_new_database: bool) -> SqliteConnection {
+    let conn = if is_new_database {
         println!("Creating initial database file at {:?}", file.as_ref());
         let mut conn: SqliteConnection = get_connection(file, ConnectionMode::WriteNew)
             .await
@@ -326,10 +301,25 @@ async fn init_connection(
             .unwrap()
     };
 
-    let starting_queue = InsertedPendingRow::get_pending_queue(&mut conn)
-        .await
-        .unwrap();
-    (conn, starting_queue)
+    conn
+}
+
+async fn get_starting_queue(conn: &mut SqliteConnection, reprocess: bool) -> Vec<WorkUnit> {
+    if reprocess {
+        InsertedPendingRow::get_pending_rows(conn)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(InsertedRow::Pending)
+            .collect()
+    } else {
+        InsertedDecidedRow::get_decided_rows(conn)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(InsertedRow::Decided)
+            .collect()
+    }
 }
 
 fn install_ctrlc_handler(state: Arc<SharedThreadState>) {
@@ -340,7 +330,7 @@ fn install_ctrlc_handler(state: Arc<SharedThreadState>) {
 }
 
 fn start_threads(
-    starting_queue: Vec<InsertedPendingRow>,
+    starting_queue: Vec<WorkUnit>,
     conn: SqliteConnection,
     num_workers: usize,
     state: Arc<SharedThreadState>,
@@ -401,6 +391,9 @@ struct Args {
     /// If present, run with initial conditions. Otherwise, assume that we are using an existing database.
     #[arg(long, action)]
     init: bool,
+    /// If present, reprocess all decided rows
+    #[arg(long, action)]
+    reprocess: bool,
     /// Database file to use. If init is set, this writes a new file. Otherwise, this opens an existing database.
     #[arg(short = 'i', long = "in")]
     in_path: PathBuf,
@@ -409,19 +402,19 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let (conn, starting_queue) = block_on(init_connection(args.in_path, args.init));
-    println!("Starting queue size: {}", starting_queue.len());
+    let mut conn = block_on(init_connection(args.in_path, args.init));
 
+    let starting_queue = block_on(get_starting_queue(&mut conn, args.reprocess));
     let starting_queue = if args.sort_halted_first {
-        let (mut halts, mut not_halts): (Vec<InsertedPendingRow>, Vec<InsertedPendingRow>) =
-            starting_queue
-                .iter()
-                .partition(|table| table.machine.contains_halt_transition());
+        let (mut halts, mut not_halts): (Vec<WorkUnit>, Vec<WorkUnit>) = starting_queue
+            .iter()
+            .partition(|table| table.machine().contains_halt_transition());
         halts.append(&mut not_halts);
         halts
     } else {
         starting_queue
     };
+    println!("Starting queue size: {}", starting_queue.len());
 
     let state = Arc::new(SharedThreadState::new());
     install_ctrlc_handler(state.clone());

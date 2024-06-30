@@ -7,7 +7,7 @@ use sqlx::{
 };
 
 use crate::{
-    seed::{DecidedNode, MachineDecision, PendingNode, RunStats, STARTING_MACHINE},
+    seed::{MachineDecision, RunStats, STARTING_MACHINE},
     turing::MachineTable,
 };
 
@@ -142,12 +142,12 @@ impl StatsRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // An undecided row that does not yet exist in the database.
 pub struct UninsertedPendingRow {
-    machine: MachineTable,
+    pub machine: MachineTable,
 }
 
 impl UninsertedPendingRow {
     /// Insert a [MachineTable] as a pending result row
-    async fn insert_pending_row(
+    pub async fn insert_pending_row(
         self,
         conn: &mut SqliteConnection,
     ) -> SqlResult<InsertedPendingRow> {
@@ -186,7 +186,7 @@ impl InsertedPendingRow {
     }
 
     /// Update a pending result row into a decided row, including stats
-    async fn update(
+    pub async fn update(
         self,
         conn: &mut SqliteConnection,
         decision: Decision,
@@ -223,7 +223,7 @@ impl InsertedPendingRow {
     }
 
     /// Retrieve all of the [InsertedPendingRow]s in the database.
-    pub async fn get_pending_queue(
+    pub async fn get_pending_rows(
         conn: &mut SqliteConnection,
     ) -> SqlResult<Vec<InsertedPendingRow>> {
         #[derive(FromRow)]
@@ -231,23 +231,19 @@ impl InsertedPendingRow {
             results_id: ResultRowID,
             machine: Vec<u8>,
         }
-        let pending_queue = sqlx::query_as::<_, Row>(
+        let rows = sqlx::query_as::<_, Row>(
             "SELECT results_id, machine FROM results WHERE decision IS NULL",
         )
         .fetch_all(conn)
         .await?;
-        let pending_queue = pending_queue
+        let rows = rows
             .into_iter()
             .map(|row| Self {
                 id: row.results_id,
                 machine: MachineTable::try_from(row.machine.as_slice()).unwrap(),
             })
             .collect();
-        Ok(pending_queue)
-    }
-
-    pub fn into_node(&self) -> PendingNode {
-        PendingNode::new(self.machine)
+        Ok(rows)
     }
 }
 
@@ -284,69 +280,43 @@ impl InsertedDecidedRow {
 
         txn.commit().await
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Worker result produced by worker threads
-pub struct WorkerResult {
-    pending_row: InsertedPendingRow,
-    decision: Decision,
-    stats: RunStats,
-    child_rows: Vec<UninsertedPendingRow>,
-}
-
-impl WorkerResult {
-    /// Construct a new [WorkerResult] out of an existing [InsertedPendingRow] and [DecidedNode].
-    /// The row and node's [MachineTable]s must match or else a panic occurs. The statistics are
-    /// taken from the node node.
-    pub fn new(pending_row: InsertedPendingRow, node: &DecidedNode) -> WorkerResult {
-        assert_eq!(pending_row.machine, node.table);
-        let child_rows = if let MachineDecision::EmptyTransition(nodes) = &node.decision {
-            nodes
-                .iter()
-                .map(|node| UninsertedPendingRow {
-                    machine: node.table,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
-        WorkerResult {
-            pending_row,
-            decision: Decision::from(&node.decision),
-            stats: node.stats,
-            child_rows,
-        }
-    }
-
-    /// Submit the results in this [WorkerResult] to the database. This will insert both the decided
-    /// row along with its stats as well as its undecided child row if it has any.
-    pub async fn submit(
-        self,
+    /// Retrieve all of the [InsertedDecidedRow]s in the database.
+    pub async fn get_decided_rows(
         conn: &mut SqliteConnection,
-    ) -> SqlResult<(InsertedDecidedRow, Vec<InsertedPendingRow>)> {
-        let mut txn = conn.begin().await?;
-
-        let decided_row = self
-            .pending_row
-            .update(&mut txn, self.decision, self.stats)
-            .await?;
-
-        let mut pending_rows = vec![];
-        for pending_row in self.child_rows {
-            let pending_row = pending_row.insert_pending_row(&mut txn).await?;
-            pending_rows.push(pending_row);
+    ) -> SqlResult<Vec<InsertedDecidedRow>> {
+        #[derive(FromRow)]
+        struct Row {
+            results_id: ResultRowID,
+            machine: Vec<u8>,
+            decision: Decision,
+            steps: u32,
+            space: u32,
         }
-
-        txn.commit().await?;
-        Ok((decided_row, pending_rows))
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT results_id, machine, decision, steps, space FROM results
+                 INNER JOIN stats USING (results_id)",
+        )
+        .fetch_all(conn)
+        .await?;
+        let rows = rows
+            .into_iter()
+            .map(|row| Self {
+                id: row.results_id,
+                machine: MachineTable::try_from(row.machine.as_slice()).unwrap(),
+                decision: row.decision,
+                steps: row.steps,
+                space: row.space,
+            })
+            .collect();
+        Ok(rows)
     }
 }
 
 /// Represents a single row in the results table, along with any additional information in other
 /// tables. This differs from [ResultRow] in that this struct also contains information from the
 /// stats table.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InsertedRow {
     Pending(InsertedPendingRow),
     Decided(InsertedDecidedRow),
@@ -392,6 +362,13 @@ impl InsertedRow {
             };
             Ok(row_object)
         })
+    }
+
+    pub fn machine(&self) -> MachineTable {
+        match self {
+            InsertedRow::Pending(pending) => pending.machine,
+            InsertedRow::Decided(decided) => decided.machine,
+        }
     }
 }
 
@@ -515,117 +492,4 @@ pub async fn get_connection(
     run_command(&mut conn, "PRAGMA synchronous = normal").await?;
     run_command(&mut conn, "PRAGMA journal_mode = WAL;").await?;
     Ok(conn)
-}
-
-#[cfg(test)]
-mod test {
-    use std::{collections::HashSet, str::FromStr};
-
-    use smol::block_on;
-
-    use crate::{
-        seed::{MachineDecision, PendingNode, BB5_CHAMPION, STARTING_MACHINE},
-        sql::{Decision, InsertedPendingRow, UninsertedPendingRow, WorkerResult},
-        turing::MachineTable,
-    };
-
-    use super::{create_tables, get_connection, ConnectionMode};
-
-    #[test]
-    fn test_submit_results() {
-        block_on(async {
-            let mut conn = get_connection(":memory:", ConnectionMode::WriteNew)
-                .await
-                .unwrap();
-            create_tables(&mut conn).await.unwrap();
-
-            let machine = MachineTable::from_str(STARTING_MACHINE).unwrap();
-            let decided_node = PendingNode::new(machine).decide();
-            let MachineDecision::EmptyTransition(pending_nodes) = decided_node.decision.clone()
-            else {
-                unreachable!()
-            };
-
-            let pending_row = UninsertedPendingRow { machine }
-                .insert_pending_row(&mut conn)
-                .await
-                .unwrap();
-
-            let (inserted_decided_row, inserted_children) =
-                WorkerResult::new(pending_row, &decided_node)
-                    .submit(&mut conn)
-                    .await
-                    .unwrap();
-
-            assert_eq!(pending_nodes.len(), inserted_children.len());
-            assert_eq!(
-                inserted_decided_row.decision,
-                Decision::from(&decided_node.decision)
-            );
-            assert_eq!(
-                inserted_decided_row.space,
-                decided_node.stats.space_used() as u32
-            );
-            assert_eq!(
-                inserted_decided_row.steps,
-                decided_node.stats.get_total_steps() as u32
-            );
-
-            let expected_pending_queue: HashSet<MachineTable> =
-                pending_nodes.iter().map(|x| x.table).collect();
-            let actual_pending_queue: HashSet<MachineTable> =
-                InsertedPendingRow::get_pending_queue(&mut conn)
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| x.machine)
-                    .collect();
-
-            assert_eq!(expected_pending_queue, actual_pending_queue);
-        })
-    }
-
-    #[test]
-    fn test_submit_results2() {
-        block_on(async {
-            let mut conn = get_connection(":memory:", ConnectionMode::WriteNew)
-                .await
-                .unwrap();
-            create_tables(&mut conn).await.unwrap();
-
-            let machine = MachineTable::from_str(BB5_CHAMPION).unwrap();
-            let decided_node = PendingNode::new(machine).decide();
-
-            let pending_row = UninsertedPendingRow { machine }
-                .insert_pending_row(&mut conn)
-                .await
-                .unwrap();
-
-            let (inserted_decided_row, inserted_children) =
-                WorkerResult::new(pending_row, &decided_node)
-                    .submit(&mut conn)
-                    .await
-                    .unwrap();
-
-            assert_eq!(0, inserted_children.len());
-            assert_eq!(
-                inserted_decided_row.decision,
-                Decision::from(&decided_node.decision)
-            );
-            assert_eq!(
-                inserted_decided_row.space,
-                decided_node.stats.space_used() as u32
-            );
-            assert_eq!(
-                inserted_decided_row.steps,
-                decided_node.stats.get_total_steps() as u32
-            );
-
-            let actual_pending_queue = InsertedPendingRow::get_pending_queue(&mut conn)
-                .await
-                .unwrap();
-
-            assert!(actual_pending_queue.is_empty());
-        })
-    }
 }

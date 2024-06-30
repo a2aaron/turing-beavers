@@ -4,3 +4,4 @@
 pub mod seed;
 pub mod sql;
 pub mod turing;
+pub mod worker;
