@@ -12,7 +12,7 @@ use std::{
 };
 
 use clap::{arg, Parser};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::{Receiver, RecvTimeoutError, Sender};
 use smol::block_on;
 use sqlx::{Connection, SqliteConnection};
 use turing_beavers::{
@@ -194,37 +194,50 @@ async fn run_processor(
     recv_decided: ReceiverProcessorQueue,
 ) {
     let mut sender_closed = false;
-    while let Ok(worker_result) = recv_decided.recv() {
-        let (rows_written, _decided_row, new_work_units) =
-            worker_result.submit(&mut conn).await.unwrap();
+    loop {
+        match recv_decided.recv_timeout(Duration::from_secs(5)) {
+            Ok(worker_result) => {
+                let (rows_written, _decided_row, new_work_units) =
+                    worker_result.submit(&mut conn).await.unwrap();
 
-        if !sender_closed && let Err(_) = add_work_to_queue(&send_pending, new_work_units) {
-            println!("Processor -- send_pending closed, no longer adding work to queue");
-            sender_closed = true;
-        };
+                if !sender_closed && let Err(_) = add_work_to_queue(&send_pending, new_work_units) {
+                    println!("Processor -- send_pending closed, no longer adding work to queue");
+                    sender_closed = true;
+                };
 
-        let unprocessed = recv_decided.len();
-        let pending = if sender_closed {
-            None
-        } else {
-            Some(send_pending.len())
-        };
-        send_stats
-            .send(ProcessorStats {
-                unprocessed,
-                rows_written,
-                pending,
-            })
-            .unwrap();
+                let unprocessed = recv_decided.len();
+                let pending = if sender_closed {
+                    None
+                } else {
+                    Some(send_pending.len())
+                };
+                send_stats
+                    .send(ProcessorStats {
+                        unprocessed,
+                        rows_written,
+                        pending,
+                    })
+                    .unwrap();
 
-        if state.should_processor_force_exit() {
-            println!(
-                "Processor -- Abandoning {} unprocessed results in queue",
-                unprocessed
-            );
-            break;
+                if state.should_processor_force_exit() {
+                    println!(
+                        "Processor -- Abandoning {} unprocessed results in queue",
+                        unprocessed
+                    );
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                println!("Processor -- Exiting due to disconnected ReceiverProcessorQueue.");
+                break;
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                println!("Processor -- Exiting due to timeout in ReceiverProcessorQueue (no work after 5 seconds).");
+                break;
+            }
         }
     }
+
     let remaining_pending = RowCounts::get_counts(&mut conn).await.pending;
     println!(
         "Processor -- exiting with {} pending machines written to database",
