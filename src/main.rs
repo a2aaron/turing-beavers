@@ -18,7 +18,7 @@ use turing_beavers::{
     seed::{Decision, PendingNode, RunStats},
     sql::{
         create_tables, get_connection, insert_initial_row, ConnectionMode, InsertedDecidedRow,
-        InsertedPendingRow, InsertedRow, RowCounts,
+        InsertedPendingRow, RowCounts,
     },
     worker::{
         add_work_to_queue, with_starting_queue, ReceiverProcessorQueue, ReceiverWorkerQueue,
@@ -311,7 +311,7 @@ async fn get_starting_queue(conn: &mut SqliteConnection, reprocess: bool) -> Vec
             .await
             .unwrap()
             .into_iter()
-            .map(InsertedRow::Pending)
+            .map(WorkUnit::Pending)
             .collect()
     } else {
         println!("Retrieving decided rows for reprocessing...");
@@ -319,7 +319,7 @@ async fn get_starting_queue(conn: &mut SqliteConnection, reprocess: bool) -> Vec
             .await
             .unwrap()
             .into_iter()
-            .map(InsertedRow::Decided)
+            .map(WorkUnit::Reprocess)
             .collect()
     }
 }

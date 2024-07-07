@@ -1,17 +1,31 @@
 use crate::{
     seed::{DecidedNode, Decision, RunStats},
-    sql::{DecisionKind, InsertedDecidedRow, InsertedRow, SqlResult, UninsertedPendingRow},
+    sql::{DecisionKind, InsertedDecidedRow, InsertedPendingRow, SqlResult, UninsertedPendingRow},
+    turing::MachineTable,
 };
 use crossbeam::channel::{Receiver, SendError, Sender};
 use sqlx::{Connection, SqliteConnection};
-
-pub type WorkUnit = InsertedRow;
 
 pub type SenderProcessorQueue = Sender<WorkerResult>;
 pub type ReceiverProcessorQueue = Receiver<WorkerResult>;
 
 pub type SenderWorkerQueue = Sender<WorkUnit>;
 pub type ReceiverWorkerQueue = Receiver<WorkUnit>;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum WorkUnit {
+    Pending(InsertedPendingRow),
+    Reprocess(InsertedDecidedRow),
+}
+
+impl WorkUnit {
+    pub fn machine(&self) -> MachineTable {
+        match self {
+            WorkUnit::Pending(row) => row.machine,
+            WorkUnit::Reprocess(row) => row.machine,
+        }
+    }
+}
 
 pub fn with_starting_queue(machines: Vec<WorkUnit>) -> (ReceiverWorkerQueue, SenderWorkerQueue) {
     let (send, recv) = crossbeam::channel::unbounded();
@@ -59,7 +73,7 @@ impl WorkerResult {
         conn: &mut SqliteConnection,
     ) -> SqlResult<(usize, InsertedDecidedRow, Vec<WorkUnit>)> {
         match self.work_unit {
-            InsertedRow::Pending(pending) => {
+            WorkUnit::Pending(pending) => {
                 let mut txn = conn.begin().await?;
                 let mut rows_written = 0;
                 let decision = DecisionKind::from(&self.decision);
@@ -72,7 +86,7 @@ impl WorkerResult {
                         let pending_row = UninsertedPendingRow { machine };
                         let pending_row = pending_row.insert_pending_row(&mut txn).await?;
                         rows_written += 1;
-                        out.push(InsertedRow::Pending(pending_row));
+                        out.push(WorkUnit::Pending(pending_row));
                     }
                     out
                 } else {
@@ -82,7 +96,7 @@ impl WorkerResult {
                 txn.commit().await?;
                 Ok((rows_written, decided_row, pending_rows))
             }
-            InsertedRow::Decided(decided_row) => {
+            WorkUnit::Reprocess(decided_row) => {
                 // Check that the decision we found for this row matches the existing one.
                 // If not, panic, since this should never happen.
                 // We don't do anything for this row since there isn't actually anything to update.

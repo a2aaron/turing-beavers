@@ -379,13 +379,6 @@ impl InsertedRow {
             Ok(row_object)
         })
     }
-
-    pub fn machine(&self) -> MachineTable {
-        match self {
-            InsertedRow::Pending(pending) => pending.machine,
-            InsertedRow::Decided(decided) => decided.machine,
-        }
-    }
 }
 
 /// A decision along with any relevant stats.
