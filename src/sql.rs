@@ -1,4 +1,4 @@
-use std::{mem::Discriminant, path::Path, str::FromStr};
+use std::{path::Path, str::FromStr};
 
 use smol::stream::{Stream, StreamExt};
 use sqlx::{
@@ -292,12 +292,29 @@ impl InsertedDecidedRow {
             steps: u32,
             space: u32,
         }
-        let rows = sqlx::query_as::<_, Row>(
-            "SELECT results_id, machine, decision, steps, space FROM results
-                 INNER JOIN stats USING (results_id)",
-        )
-        .fetch_all(conn)
-        .await?;
+
+        async fn fetch_kind(
+            conn: &mut SqliteConnection,
+            kind: DecisionKind,
+        ) -> SqlResult<Vec<Row>> {
+            let rows_step = sqlx::query_as::<_, Row>(
+                "SELECT results_id, machine, decision, steps, space FROM results
+                     INNER JOIN stats USING (results_id) WHERE decision = ?",
+            )
+            .bind(kind)
+            .fetch_all(conn)
+            .await?;
+            Ok(rows_step)
+        }
+
+        let rows1 = fetch_kind(conn, DecisionKind::Halting).await?;
+        let rows2 = fetch_kind(conn, DecisionKind::NonHalting).await?;
+        let rows3 = fetch_kind(conn, DecisionKind::EmptyTransition).await?;
+        let rows4 = fetch_kind(conn, DecisionKind::UndecidedSpaceLimit).await?;
+        let rows5 = fetch_kind(conn, DecisionKind::UndecidedStepLimit).await?;
+
+        let rows = [rows1, rows2, rows3, rows4, rows5].into_iter().flatten();
+
         let rows = rows
             .into_iter()
             .map(|row| Self {

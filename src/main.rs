@@ -120,7 +120,7 @@ impl Stats {
         let rate = decided as f32 / total_elapsed;
         let total_step_rate = self.worker.total_steps as f32 / total_elapsed;
 
-        let worker_status = format!("new empty: {: >5} | halt: {: >5} | nonhalt: {: >5} | undec step: {: >5} | undec space: {: >5}",
+        let worker_status = format!("empty: {: >5} | halt: {: >5} | nonhalt: {: >5} | undec step: {: >5} | undec space: {: >5}",
             self.worker.empty - prev.worker.empty,
             self.worker.halt - prev.worker.halt,
             self.worker.nonhalt - prev.worker.nonhalt,
@@ -193,10 +193,10 @@ async fn run_processor(
 ) {
     let mut sender_closed = false;
     while let Ok(worker_result) = recv_decided.recv() {
-        let (_decided_row, child_rows) = worker_result.submit(&mut conn).await.unwrap();
-        let rows_written = 1 + child_rows.len();
+        let (rows_written, _decided_row, new_work_units) =
+            worker_result.submit(&mut conn).await.unwrap();
 
-        if !sender_closed && let Err(_) = add_work_to_queue(&send_pending, child_rows) {
+        if !sender_closed && let Err(_) = add_work_to_queue(&send_pending, new_work_units) {
             println!("Processor -- send_pending closed, no longer adding work to queue");
             sender_closed = true;
         };
@@ -305,7 +305,8 @@ async fn init_connection(file: impl AsRef<Path>, is_new_database: bool) -> Sqlit
 }
 
 async fn get_starting_queue(conn: &mut SqliteConnection, reprocess: bool) -> Vec<WorkUnit> {
-    if reprocess {
+    if !reprocess {
+        println!("Retrieving pending rows...");
         InsertedPendingRow::get_pending_rows(conn)
             .await
             .unwrap()
@@ -313,6 +314,7 @@ async fn get_starting_queue(conn: &mut SqliteConnection, reprocess: bool) -> Vec
             .map(InsertedRow::Pending)
             .collect()
     } else {
+        println!("Retrieving decided rows for reprocessing...");
         InsertedDecidedRow::get_decided_rows(conn)
             .await
             .unwrap()
@@ -406,6 +408,7 @@ fn main() {
 
     let starting_queue = block_on(get_starting_queue(&mut conn, args.reprocess));
     let starting_queue = if args.sort_halted_first {
+        println!("Sorting rows to work on machines with halt transitions first");
         let (mut halts, mut not_halts): (Vec<WorkUnit>, Vec<WorkUnit>) = starting_queue
             .iter()
             .partition(|row| row.machine().contains_halt_transition());

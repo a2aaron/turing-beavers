@@ -23,10 +23,10 @@ pub fn with_starting_queue(machines: Vec<WorkUnit>) -> (ReceiverWorkerQueue, Sen
 
 pub fn add_work_to_queue(
     sender: &SenderWorkerQueue,
-    rows: Vec<WorkUnit>,
+    new_work: Vec<WorkUnit>,
 ) -> Result<(), SendError<WorkUnit>> {
-    for row in rows {
-        sender.send(row)?;
+    for work in new_work {
+        sender.send(work)?;
     }
     Ok(())
 }
@@ -57,31 +57,47 @@ impl WorkerResult {
     pub async fn submit(
         self,
         conn: &mut SqliteConnection,
-    ) -> SqlResult<(InsertedDecidedRow, Vec<WorkUnit>)> {
-        let mut txn = conn.begin().await?;
-
-        let decided_row = match self.work_unit {
+    ) -> SqlResult<(usize, InsertedDecidedRow, Vec<WorkUnit>)> {
+        match self.work_unit {
             InsertedRow::Pending(pending) => {
+                let mut txn = conn.begin().await?;
+                let mut rows_written = 0;
                 let decision = DecisionKind::from(&self.decision);
-                pending.update(&mut txn, decision, self.stats).await?
-            }
-            InsertedRow::Decided(_) => todo!(),
-        };
+                rows_written += 1;
+                let decided_row = pending.update(&mut txn, decision, self.stats).await?;
 
-        let pending_rows = if let Decision::EmptyTransition(child_rows) = self.decision {
-            let mut out = Vec::with_capacity(child_rows.len());
-            for machine in child_rows {
-                let pending_row = UninsertedPendingRow { machine };
-                let pending_row = pending_row.insert_pending_row(&mut txn).await?;
-                out.push(InsertedRow::Pending(pending_row));
-            }
-            out
-        } else {
-            vec![]
-        };
+                let pending_rows = if let Decision::EmptyTransition(child_rows) = self.decision {
+                    let mut out = Vec::with_capacity(child_rows.len());
+                    for machine in child_rows {
+                        let pending_row = UninsertedPendingRow { machine };
+                        let pending_row = pending_row.insert_pending_row(&mut txn).await?;
+                        rows_written += 1;
+                        out.push(InsertedRow::Pending(pending_row));
+                    }
+                    out
+                } else {
+                    vec![]
+                };
 
-        txn.commit().await?;
-        Ok((decided_row, pending_rows))
+                txn.commit().await?;
+                Ok((rows_written, decided_row, pending_rows))
+            }
+            InsertedRow::Decided(decided_row) => {
+                // Check that the decision we found for this row matches the existing one.
+                // If not, panic, since this should never happen.
+                // We don't do anything for this row since there isn't actually anything to update.
+                assert_eq!(decided_row.machine, self.work_unit.machine());
+                assert_eq!(decided_row.decision, DecisionKind::from(&self.decision));
+                assert_eq!(decided_row.steps, self.stats.get_total_steps() as u32);
+                assert_eq!(decided_row.space, self.stats.space_used() as u32);
+                // Do not return any WorkUnits from submitting this WorkUnit
+                // We don't want any additional rows to be inserted anyways since this is a reprocess
+                // Since the reprocess mode already fetches all decided rows, this means any child work units
+                // that would normally be generated are either already pending (in which case, we don't care
+                // about reprocessing them) or are already decided (in which case they were already picked up)
+                Ok((0, decided_row, vec![]))
+            }
+        }
     }
 }
 
@@ -121,7 +137,7 @@ mod test {
                 .unwrap();
             let work_unit = WorkUnit::Pending(pending_row);
 
-            let (inserted_decided_row, inserted_children) =
+            let (_, inserted_decided_row, inserted_children) =
                 WorkerResult::new(work_unit, &decided_node)
                     .submit(&mut conn)
                     .await
@@ -171,7 +187,7 @@ mod test {
                 .unwrap();
             let work_unit = WorkUnit::Pending(pending_row);
 
-            let (inserted_decided_row, inserted_children) =
+            let (_, inserted_decided_row, inserted_children) =
                 WorkerResult::new(work_unit, &decided_node)
                     .submit(&mut conn)
                     .await
