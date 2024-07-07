@@ -8,7 +8,6 @@ use crate::{
     },
     turing::MachineTable,
 };
-use chrono::{DateTime, Local};
 use crossbeam::channel::{Receiver, SendError, Sender};
 use sqlx::{Connection, SqliteConnection};
 
@@ -20,7 +19,6 @@ pub type ReceiverWorkerQueue = Receiver<WorkUnit>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoftStats {
-    pub start_time: DateTime<Local>,
     pub duration: Duration,
     pub session_id: String,
 }
@@ -31,13 +29,11 @@ impl SoftStats {
         conn: &mut SqliteConnection,
         results_id: ResultRowID,
     ) -> SqlQueryResult {
-        let start_time = self.start_time.to_rfc3339();
         let duration = self.duration.as_secs_f64();
         let result = sqlx::query(
-            "INSERT INTO soft_stats(results_id, start_time, seconds, session_id) VALUES($1, $2, $3, $4)",
+            "INSERT INTO soft_stats(results_id, seconds, session_id, start_time) VALUES($1, $2, $3, datetime('now'))",
         )
         .bind(results_id)
-        .bind(start_time)
         .bind(duration)
         .bind(&self.session_id)
         .execute(conn)
@@ -173,7 +169,6 @@ impl WorkerResult {
 mod test {
     use std::{collections::HashSet, str::FromStr, time::Duration};
 
-    use chrono::Local;
     use smol::block_on;
 
     use crate::{
@@ -191,7 +186,6 @@ mod test {
         /// the value of this struct.
         fn blank() -> SoftStats {
             SoftStats {
-                start_time: Local::now(),
                 duration: Duration::from_secs(1),
                 session_id: "none".to_string(),
             }

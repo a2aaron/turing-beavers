@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Local;
 use clap::{arg, Parser};
 use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
@@ -245,21 +244,15 @@ fn run_decider_worker(
     recv_pending: ReceiverWorkerQueue,
 ) {
     while let Ok(work_unit) = recv_pending.recv() {
-        // Local::now() uses the system real-time clock
-        // On Mac OS X (and most other platform), this is lower precision (microsecond-ish), so we take two measurements
-        // One using Instant, which is high precision (nanosecond), and one using DateTime<Local>, which we just use
-        // for the start time timestamp (which does not need to be high-res)
-        let start_time = Local::now();
-        let start_time_instant = Instant::now();
+        let now = Instant::now();
         let result = PendingNode::new(work_unit.machine()).decide();
-        let duration = start_time_instant.elapsed();
+        let duration = now.elapsed();
 
         send_stats
             .send((result.decision.clone(), result.stats))
             .unwrap();
 
         let soft_stats = SoftStats {
-            start_time,
             duration,
             session_id: session_id.clone(),
         };
