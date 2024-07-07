@@ -13,10 +13,10 @@ use crate::{
 
 /// Convience type
 pub type SqlResult<T> = Result<T, sqlx::Error>;
-pub type SqlQueryResult = SqlResult<sqlx::sqlite::SqliteQueryResult>;
+type SqlQueryResult = SqlResult<sqlx::sqlite::SqliteQueryResult>;
 
 /// The type of "results_id" column
-pub type ResultRowID = i64;
+type ResultRowID = i64;
 
 /// The type of the "machine" column in the results table
 pub type PackedMachine = [u8; 7];
@@ -105,24 +105,14 @@ impl sqlx::Type<Sqlite> for MachineTable {
     }
 }
 
-/// Represents a single row in the results table. This differs from [RowObject] in that this
-/// struct does not contain any extra data from the stats table.
-#[derive(sqlx::FromRow, Clone, Copy, PartialEq, Eq)]
-pub struct ResultRow {
-    pub results_id: ResultRowID,
-    pub machine: MachineTable,
-    /// The result of deciding the machine. If None, then this machine is still pending.
-    pub decision: Option<DecisionKind>,
-}
-
 /// Represents a single row in the stats table
 #[derive(sqlx::FromRow, Clone, Copy, PartialEq, Eq)]
-pub struct StatsRow {
-    pub results_id: ResultRowID,
+struct StatsRow {
+    results_id: ResultRowID,
     /// Number of steps taken before the machine was decided
-    pub steps: u32,
+    steps: u32,
     /// Number of cells used by the machine before the machine was decided
-    pub space: u32,
+    space: u32,
 }
 
 impl StatsRow {
@@ -249,7 +239,7 @@ impl InsertedPendingRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A decided row that exists in the database
 pub struct InsertedDecidedRow {
-    pub id: ResultRowID,
+    id: ResultRowID,
     pub machine: MachineTable,
     pub decision: DecisionKind,
     pub steps: u32,
@@ -381,14 +371,6 @@ impl InsertedRow {
     }
 }
 
-/// A decision along with any relevant stats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DecisionWithStats {
-    pub decision: DecisionKind,
-    pub steps: u32,
-    pub space: u32,
-}
-
 #[derive(FromRow)]
 pub struct RowCounts {
     pub total: u32,
@@ -465,7 +447,7 @@ pub async fn insert_initial_row(conn: &mut SqliteConnection) -> SqlResult<Insert
 }
 
 /// Convience function to run a command.
-pub async fn run_command(conn: &mut SqliteConnection, sql: &str) -> SqlQueryResult {
+async fn run_command(conn: &mut SqliteConnection, sql: &str) -> SqlQueryResult {
     sqlx::query(sql).execute(conn).await
 }
 
