@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::path::Path;
 
 use smol::stream::{Stream, StreamExt};
 use sqlx::{
@@ -7,16 +7,17 @@ use sqlx::{
 };
 
 use crate::{
-    seed::{Decision, RunStats, STARTING_MACHINE},
+    seed::{Decision, RunStats},
     turing::MachineTable,
 };
 
 /// Convience type
 pub type SqlResult<T> = Result<T, sqlx::Error>;
-type SqlQueryResult = SqlResult<sqlx::sqlite::SqliteQueryResult>;
+pub type SqlQueryResult = SqlResult<sqlx::sqlite::SqliteQueryResult>;
 
 /// The type of "results_id" column
-type ResultRowID = i64;
+pub type ResultRowID = i64;
+pub type RowsAffected = u64;
 
 /// The type of the "machine" column in the results table
 pub type PackedMachine = [u8; 7];
@@ -116,7 +117,7 @@ struct StatsRow {
 }
 
 impl StatsRow {
-    async fn insert(&self, conn: &mut SqliteConnection) -> SqlResult<()> {
+    async fn insert(&self, conn: &mut SqliteConnection) -> SqlQueryResult {
         let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
             .bind(self.results_id)
             .bind(self.steps)
@@ -124,7 +125,7 @@ impl StatsRow {
             .execute(conn)
             .await?;
         assert_eq!(result.rows_affected(), 1);
-        Ok(())
+        Ok(result)
     }
 }
 
@@ -156,7 +157,7 @@ impl UninsertedPendingRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// An undecided row that exists in the database
 pub struct InsertedPendingRow {
-    id: ResultRowID,
+    pub id: ResultRowID,
     pub machine: MachineTable,
 }
 
@@ -180,7 +181,8 @@ impl InsertedPendingRow {
         conn: &mut SqliteConnection,
         decision: DecisionKind,
         stats: RunStats,
-    ) -> SqlResult<InsertedDecidedRow> {
+    ) -> SqlResult<(InsertedDecidedRow, RowsAffected)> {
+        let mut rows_affected = 0;
         let mut txn = conn.begin().await?;
 
         // Update decision row
@@ -191,6 +193,7 @@ impl InsertedPendingRow {
             .execute(&mut *txn)
             .await?;
         assert_eq!(result.rows_affected(), 1);
+        rows_affected += result.rows_affected();
 
         // Now actually insert the stats
         let stats_row = StatsRow {
@@ -198,17 +201,19 @@ impl InsertedPendingRow {
             space: stats.space_used() as u32,
             results_id: self.id,
         };
-        stats_row.insert(&mut txn).await?;
+        let result = stats_row.insert(&mut txn).await?;
+        rows_affected += result.rows_affected();
 
         txn.commit().await?;
 
-        Ok(InsertedDecidedRow {
+        let inserted_decided_row = InsertedDecidedRow {
             id: self.id,
             machine: self.machine,
             decision,
             steps: stats.get_total_steps() as u32,
             space: stats.space_used() as u32,
-        })
+        };
+        Ok((inserted_decided_row, rows_affected))
     }
 
     /// Retrieve all of the [InsertedPendingRow]s in the database.
@@ -239,7 +244,7 @@ impl InsertedPendingRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A decided row that exists in the database
 pub struct InsertedDecidedRow {
-    id: ResultRowID,
+    pub id: ResultRowID,
     pub machine: MachineTable,
     pub decision: DecisionKind,
     pub steps: u32,
@@ -410,40 +415,38 @@ impl RowCounts {
 /// Create the tables for the database if they do not already exist.
 pub async fn create_tables(conn: &mut SqliteConnection) -> SqlResult<()> {
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS results (
+        "CREATE TABLE results (
         results_id       INTEGER NOT NULL PRIMARY KEY,
-        machine  BLOB    NOT NULL UNIQUE,
-        decision INTEGER     NULL)",
+        machine          BLOB    NOT NULL UNIQUE,
+        decision         INTEGER     NULL)",
     )
     .execute(&mut *conn)
     .await?;
 
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS stats (
-            results_id    INTEGER NOT NULL REFERENCES results(results_id),
-            steps INTEGER NOT NULL,
-            space INTEGER NOT NULL)",
+        "CREATE TABLE stats (
+            results_id INTEGER NOT NULL REFERENCES results(results_id),
+            steps      INTEGER NOT NULL,
+            space      INTEGER NOT NULL)",
     )
     .execute(&mut *conn)
     .await?;
-    Ok(())
-}
 
-/// Insert the initial row, if it does not already exist. This is used to set up the database for the first time.
-pub async fn insert_initial_row(conn: &mut SqliteConnection) -> SqlResult<InsertedPendingRow> {
-    // Try to insert the initial row. OR IGNORE is used here to not do the insert if we have already
-    // decided the row.
-    let machine = MachineTable::from_str(STARTING_MACHINE).unwrap();
-    let array: PackedMachine = machine.into();
-    let result = sqlx::query("INSERT OR IGNORE INTO results (machine, decision) VALUES($1, NULL)")
-        .bind(&array[..])
-        .execute(conn)
+    sqlx::query("CREATE UNIQUE INDEX stats_are_unique ON stats(results_id)")
+        .execute(&mut *conn)
         .await?;
 
-    Ok(InsertedPendingRow {
-        id: result.last_insert_rowid(),
-        machine,
-    })
+    sqlx::query(
+        "CREATE TABLE soft_stats (
+            results_id INTEGER NOT NULL REFERENCES results(results_id),
+            start_time TEXT    NOT NULL,
+            seconds    REAL    NOT NULL,
+            session_id TEXT        NULL)",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    Ok(())
 }
 
 /// Convience function to run a command.

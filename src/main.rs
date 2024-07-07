@@ -2,6 +2,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    str::FromStr,
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
@@ -10,19 +11,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::Local;
 use clap::{arg, Parser};
 use crossbeam::channel::{Receiver, Sender};
 use smol::block_on;
 use sqlx::{Connection, SqliteConnection};
 use turing_beavers::{
-    seed::{Decision, PendingNode, RunStats},
+    seed::{Decision, PendingNode, RunStats, STARTING_MACHINE},
     sql::{
-        create_tables, get_connection, insert_initial_row, ConnectionMode, InsertedDecidedRow,
-        InsertedPendingRow, RowCounts,
+        create_tables, get_connection, ConnectionMode, InsertedDecidedRow, InsertedPendingRow,
+        RowCounts, RowsAffected, SqlResult, UninsertedPendingRow,
     },
+    turing::MachineTable,
     worker::{
         add_work_to_queue, with_starting_queue, ReceiverProcessorQueue, ReceiverWorkerQueue,
-        SenderProcessorQueue, SenderWorkerQueue, WorkUnit, WorkerResult,
+        SenderProcessorQueue, SenderWorkerQueue, SoftStats, WorkUnit, WorkerResult,
     },
 };
 
@@ -73,7 +76,7 @@ impl WorkerStats {
 struct ProcessorStats {
     // The number of unprocessed decided rows
     unprocessed: usize,
-    rows_written: usize,
+    rows_written: RowsAffected,
     // The number of pending rows
     pending: Option<usize>,
 }
@@ -234,6 +237,7 @@ async fn run_processor(
 }
 
 fn run_decider_worker(
+    session_id: String,
     thread_id: usize,
     state: Arc<SharedThreadState>,
     send_stats: SenderWorkerStatsQueue,
@@ -241,12 +245,26 @@ fn run_decider_worker(
     recv_pending: ReceiverWorkerQueue,
 ) {
     while let Ok(work_unit) = recv_pending.recv() {
+        // Local::now() uses the system real-time clock
+        // On Mac OS X (and most other platform), this is lower precision (microsecond-ish), so we take two measurements
+        // One using Instant, which is high precision (nanosecond), and one using DateTime<Local>, which we just use
+        // for the start time timestamp (which does not need to be high-res)
+        let start_time = Local::now();
+        let start_time_instant = Instant::now();
         let result = PendingNode::new(work_unit.machine()).decide();
+        let duration = start_time_instant.elapsed();
+
         send_stats
             .send((result.decision.clone(), result.stats))
             .unwrap();
 
-        let result = WorkerResult::new(work_unit, &result);
+        let soft_stats = SoftStats {
+            start_time,
+            duration,
+            session_id: session_id.clone(),
+        };
+
+        let result = WorkerResult::new(work_unit, &result, soft_stats);
         match send_decided.send(result) {
             Ok(()) => (),
             Err(_) => {
@@ -284,24 +302,24 @@ impl SharedThreadState {
     }
 }
 
-async fn init_connection(file: impl AsRef<Path>, is_new_database: bool) -> SqliteConnection {
-    let conn = if is_new_database {
+async fn init_connection(
+    file: impl AsRef<Path>,
+    is_new_database: bool,
+) -> SqlResult<SqliteConnection> {
+    if is_new_database {
         println!("Creating initial database file at {:?}", file.as_ref());
-        let mut conn: SqliteConnection = get_connection(file, ConnectionMode::WriteNew)
-            .await
-            .unwrap();
-        create_tables(&mut conn).await.unwrap();
+        let mut conn: SqliteConnection = get_connection(file, ConnectionMode::WriteNew).await?;
+        create_tables(&mut conn).await?;
+
         // set up initial queue
-        insert_initial_row(&mut conn).await.unwrap();
-        conn
+        let machine = MachineTable::from_str(STARTING_MACHINE).unwrap();
+        let row = UninsertedPendingRow { machine };
+        row.insert_pending_row(&mut conn).await?;
+        Ok(conn)
     } else {
         println!("Using existing database file at {:?}", file.as_ref());
-        get_connection(file, ConnectionMode::WriteExisting)
-            .await
-            .unwrap()
-    };
-
-    conn
+        get_connection(file, ConnectionMode::WriteExisting).await
+    }
 }
 
 async fn get_starting_queue(conn: &mut SqliteConnection, reprocess: bool) -> Vec<WorkUnit> {
@@ -332,6 +350,7 @@ fn install_ctrlc_handler(state: Arc<SharedThreadState>) {
 }
 
 fn start_threads(
+    session_id: String,
     starting_queue: Vec<WorkUnit>,
     conn: SqliteConnection,
     num_workers: usize,
@@ -360,16 +379,24 @@ fn start_threads(
         .unwrap();
 
     let mut workers = vec![];
-    for i in 0..num_workers {
+    for thread_id in 0..num_workers {
         let send_decided = send_decided.clone();
         let recv_pending = recv_pending.clone();
         let send_stats_worker = send_stats_worker.clone();
         let state = state.clone();
+        let session_id = session_id.clone();
 
         let worker = thread::Builder::new()
-            .name(format!("worker_{i}"))
+            .name(format!("worker_{thread_id}"))
             .spawn(move || {
-                run_decider_worker(i, state, send_stats_worker, send_decided, recv_pending)
+                run_decider_worker(
+                    session_id,
+                    thread_id,
+                    state,
+                    send_stats_worker,
+                    send_decided,
+                    recv_pending,
+                )
             })
             .unwrap();
         workers.push(worker);
@@ -399,12 +426,15 @@ struct Args {
     /// Database file to use. If init is set, this writes a new file. Otherwise, this opens an existing database.
     #[arg(short = 'i', long = "in")]
     in_path: PathBuf,
+    /// Optional session ID to tag decided rows with.
+    #[arg(long = "session")]
+    session_id: Option<String>,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let mut conn = block_on(init_connection(args.in_path, args.init));
+    let mut conn = block_on(init_connection(args.in_path, args.init)).unwrap();
 
     let starting_queue = block_on(get_starting_queue(&mut conn, args.reprocess));
     let starting_queue = if args.sort_halted_first {
@@ -421,8 +451,13 @@ fn main() {
 
     let state = Arc::new(SharedThreadState::new());
     install_ctrlc_handler(state.clone());
+
+    let full_session_id = {
+        let session_id = args.session_id.unwrap_or("default".to_string());
+        format!("{}-workers={}", session_id, args.workers)
+    };
     let (manager, workers, _stats_printer) =
-        start_threads(starting_queue, conn, args.workers, state);
+        start_threads(full_session_id, starting_queue, conn, args.workers, state);
 
     for thread in workers {
         thread.join().unwrap()
