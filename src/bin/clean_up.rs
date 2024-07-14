@@ -30,7 +30,7 @@ async fn run(args: Args) {
         space,
         step,
         empty,
-    } = RowCounts::get_counts(&mut conn).await;
+    } = RowCounts::get_counts(&mut conn).await.unwrap();
     println!("Total: {total}, Pending: {pending}, Decided: {decided} (Halt: {halt}, Non-Halt: {nonhalt}, Step: {step}, Space: {space}, Empty: {empty})");
     conn.close().await.unwrap();
 }

@@ -143,8 +143,8 @@ impl WorkerResult {
                 // We don't do anything for this row since there isn't actually anything to update.
                 assert_eq!(decided_row.machine, self.work_unit.machine());
                 assert_eq!(decided_row.decision, DecisionKind::from(&self.decision));
-                assert_eq!(decided_row.steps, self.stats.get_total_steps() as u32);
-                assert_eq!(decided_row.space, self.stats.space_used() as u32);
+                assert_eq!(decided_row.stats.steps, self.stats.get_total_steps() as u32);
+                assert_eq!(decided_row.stats.space, self.stats.space_used() as u32);
                 // Do not return any WorkUnits from submitting this WorkUnit
                 // We don't want any additional rows to be inserted anyways since this is a reprocess
                 // Since the reprocess mode already fetches all decided rows, this means any child work units
@@ -224,11 +224,11 @@ mod test {
                 DecisionKind::from(&decided_node.decision)
             );
             assert_eq!(
-                inserted_decided_row.space,
+                inserted_decided_row.stats.space,
                 decided_node.stats.space_used() as u32
             );
             assert_eq!(
-                inserted_decided_row.steps,
+                inserted_decided_row.stats.steps,
                 decided_node.stats.get_total_steps() as u32
             );
 
@@ -274,11 +274,11 @@ mod test {
                 DecisionKind::from(&decided_node.decision)
             );
             assert_eq!(
-                inserted_decided_row.space,
+                inserted_decided_row.stats.space,
                 decided_node.stats.space_used() as u32
             );
             assert_eq!(
-                inserted_decided_row.steps,
+                inserted_decided_row.stats.steps,
                 decided_node.stats.get_total_steps() as u32
             );
 

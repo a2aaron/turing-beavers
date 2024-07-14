@@ -238,7 +238,7 @@ async fn run_processor(
         }
     }
 
-    let remaining_pending = RowCounts::get_counts(&mut conn).await.pending;
+    let remaining_pending = RowCounts::get_counts(&mut conn).await.unwrap().pending;
     println!(
         "Processor -- exiting with {} pending machines written to database",
         remaining_pending

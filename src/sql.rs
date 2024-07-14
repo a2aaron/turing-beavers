@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use smol::stream::{Stream, StreamExt};
 use sqlx::{
@@ -106,22 +106,71 @@ impl sqlx::Type<Sqlite> for MachineTable {
     }
 }
 
+/// Represents a single row in the soft_stats table
+#[derive(Debug, sqlx::FromRow, Clone, PartialEq)]
+pub struct SoftStatsRow {
+    pub results_id: ResultRowID,
+    pub seconds: f64,
+    pub session_id: String,
+    pub start_time: String,
+}
+
+impl SoftStatsRow {
+    pub async fn get_rows(conn: &mut SqliteConnection) -> SqlResult<Vec<SoftStatsRow>> {
+        sqlx::query_as::<_, SoftStatsRow>(
+            "SELECT results_id, seconds, session_id, start_time FROM soft_stats",
+        )
+        .fetch_all(&mut *conn)
+        .await
+    }
+
+    pub async fn get_rows_by_id(
+        conn: &mut SqliteConnection,
+        results_id: ResultRowID,
+    ) -> SqlResult<Vec<SoftStatsRow>> {
+        sqlx::query_as::<_, SoftStatsRow>(
+            "SELECT results_id, seconds, session_id, start_time FROM soft_stats WHERE results_id = ?",
+        ).bind(results_id)
+        .fetch_all(&mut *conn)
+        .await
+    }
+
+    pub async fn insert(&self, conn: &mut SqliteConnection) -> SqlQueryResult {
+        let result = sqlx::query(
+            "INSERT INTO soft_stats(results_id, seconds, session_id, start_time) VALUES($1, $2, $3, $4)",
+        )
+        .bind(self.results_id)
+        .bind(self.seconds)
+        .bind(&self.session_id)
+        .bind(&self.start_time)
+        .execute(conn)
+        .await?;
+        assert_eq!(result.rows_affected(), 1);
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HardStats {
+    /// Number of steps taken before the machine was decided
+    pub steps: u32,
+    /// Number of cells used by the machine before the machine was decided
+    pub space: u32,
+}
+
 /// Represents a single row in the stats table
 #[derive(sqlx::FromRow, Clone, Copy, PartialEq, Eq)]
 struct StatsRow {
     results_id: ResultRowID,
-    /// Number of steps taken before the machine was decided
-    steps: u32,
-    /// Number of cells used by the machine before the machine was decided
-    space: u32,
+    stats: HardStats,
 }
 
 impl StatsRow {
     async fn insert(&self, conn: &mut SqliteConnection) -> SqlQueryResult {
         let result = sqlx::query("INSERT INTO stats (results_id, steps, space) VALUES($1, $2, $3)")
             .bind(self.results_id)
-            .bind(self.steps)
-            .bind(self.space)
+            .bind(self.stats.steps)
+            .bind(self.stats.space)
             .execute(conn)
             .await?;
         assert_eq!(result.rows_affected(), 1);
@@ -197,8 +246,10 @@ impl InsertedPendingRow {
 
         // Now actually insert the stats
         let stats_row = StatsRow {
-            steps: stats.get_total_steps() as u32,
-            space: stats.space_used() as u32,
+            stats: HardStats {
+                steps: stats.get_total_steps() as u32,
+                space: stats.space_used() as u32,
+            },
             results_id: self.id,
         };
         let result = stats_row.insert(&mut txn).await?;
@@ -210,8 +261,10 @@ impl InsertedPendingRow {
             id: self.id,
             machine: self.machine,
             decision,
-            steps: stats.get_total_steps() as u32,
-            space: stats.space_used() as u32,
+            stats: HardStats {
+                steps: stats.get_total_steps() as u32,
+                space: stats.space_used() as u32,
+            },
         };
         Ok((inserted_decided_row, rows_affected))
     }
@@ -241,14 +294,49 @@ impl InsertedPendingRow {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct UninsertedDecidedRow {
+    pub machine: MachineTable,
+    pub decision: DecisionKind,
+    pub stats: HardStats,
+}
+impl UninsertedDecidedRow {
+    /// Insert this row into the database. It is assumed there is not already a row with the same [ResultRowID] in the database.
+    pub async fn insert(&self, conn: &mut SqliteConnection) -> SqlResult<InsertedDecidedRow> {
+        let mut txn = conn.begin().await?;
+
+        let result = sqlx::query("INSERT INTO results (machine, decision) VALUES($1, $2)")
+            .bind(self.machine)
+            .bind(self.decision)
+            .execute(&mut *txn)
+            .await?;
+        assert_eq!(result.rows_affected(), 1);
+        let row_id = result.last_insert_rowid();
+
+        let stats_row = StatsRow {
+            results_id: row_id,
+            stats: self.stats,
+        };
+        stats_row.insert(&mut txn).await?;
+
+        txn.commit().await?;
+
+        Ok(InsertedDecidedRow {
+            id: row_id,
+            machine: self.machine,
+            decision: self.decision,
+            stats: self.stats,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A decided row that exists in the database
 pub struct InsertedDecidedRow {
     pub id: ResultRowID,
     pub machine: MachineTable,
     pub decision: DecisionKind,
-    pub steps: u32,
-    pub space: u32,
+    pub stats: HardStats,
 }
 
 impl InsertedDecidedRow {
@@ -267,8 +355,7 @@ impl InsertedDecidedRow {
 
         let stats_row = StatsRow {
             results_id: self.id,
-            steps: self.steps,
-            space: self.space,
+            stats: self.stats,
         };
         stats_row.insert(&mut txn).await?;
 
@@ -316,28 +403,33 @@ impl InsertedDecidedRow {
                 id: row.results_id,
                 machine: MachineTable::try_from(row.machine.as_slice()).unwrap(),
                 decision: row.decision,
-                steps: row.steps,
-                space: row.space,
+                stats: HardStats {
+                    steps: row.steps,
+                    space: row.space,
+                },
             })
             .collect();
         Ok(rows)
     }
 }
 
-/// Represents a single row in the results table, along with any additional information in other
-/// tables. This differs from [ResultRow] in that this struct also contains information from the
-/// stats table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertedRow {
+    pub kind: InsertedRowKind,
+    pub soft_stats: Vec<SoftStatsRow>,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum InsertedRow {
+pub enum InsertedRowKind {
     Pending(InsertedPendingRow),
     Decided(InsertedDecidedRow),
 }
 
+pub trait RowStream = Stream<Item = SqlResult<InsertedRow>>;
+
 impl InsertedRow {
     /// Retrieve all rows from the database
-    pub async fn get_all_rows(
-        conn: &mut SqliteConnection,
-    ) -> impl Stream<Item = SqlResult<InsertedRow>> + '_ {
+    pub async fn get_all_rows(conn: &mut SqliteConnection) -> SqlResult<impl RowStream + '_> {
         #[derive(FromRow)]
         struct Row {
             results_id: ResultRowID,
@@ -347,32 +439,56 @@ impl InsertedRow {
             space: Option<u32>,
         }
 
+        fn map_row(
+            row: Row,
+            soft_stats: &HashMap<ResultRowID, Vec<SoftStatsRow>>,
+        ) -> SqlResult<InsertedRow> {
+            let id = row.results_id;
+            let machine = row.machine;
+            let soft_stats = soft_stats.get(&id).cloned().unwrap_or(vec![]);
+            let row = if let Some(decision) = row.decision {
+                // It is technically legal for there to be no soft_stats even when having a decided row
+                // This is because it might be an old row from before these stats were collected.
+                // These unwraps are safe because the stats row is present if and only if there is a decision
+                let steps = row.steps.unwrap();
+                let space = row.space.unwrap();
+                InsertedRowKind::Decided(InsertedDecidedRow {
+                    id,
+                    machine,
+                    decision,
+                    stats: HardStats { steps, space },
+                })
+            } else {
+                // There shouldn't be any recorded soft_stats if this row is still pending.
+                assert!(soft_stats.is_empty());
+                InsertedRowKind::Pending(InsertedPendingRow { id, machine })
+            };
+
+            Ok(InsertedRow {
+                kind: row,
+                soft_stats,
+            })
+        }
+
+        let soft_stats = SoftStatsRow::get_rows(&mut *conn).await.map(|stats| {
+            let mut hashmap = HashMap::new();
+            for stat in stats {
+                hashmap
+                    .entry(stat.results_id)
+                    .or_insert_with(|| Vec::with_capacity(1))
+                    .push(stat);
+            }
+            hashmap
+        })?;
+
         let result_rows = sqlx::query_as::<_, Row>(
             "SELECT results_id, machine, decision, steps, space FROM results
                  LEFT JOIN stats USING (results_id)",
         )
         .fetch(&mut *conn);
 
-        result_rows.map(|row| {
-            let row = row?;
-            let id = row.results_id;
-            let machine = row.machine;
-            let row_object = if let Some(decision) = row.decision {
-                // These unwraps are safe because the stats row is present if and only if there is a decision
-                let steps = row.steps.unwrap();
-                let space = row.space.unwrap();
-                InsertedRow::Decided(InsertedDecidedRow {
-                    id,
-                    machine,
-                    decision,
-                    steps,
-                    space,
-                })
-            } else {
-                InsertedRow::Pending(InsertedPendingRow { id, machine })
-            };
-            Ok(row_object)
-        })
+        let result_rows = result_rows.map(move |row| map_row(row?, &soft_stats));
+        Ok(result_rows)
     }
 }
 
@@ -388,7 +504,7 @@ pub struct RowCounts {
     pub empty: u32,
 }
 impl RowCounts {
-    pub async fn get_counts(conn: &mut SqliteConnection) -> RowCounts {
+    pub async fn get_counts(conn: &mut SqliteConnection) -> SqlResult<RowCounts> {
         sqlx::query_as(
             "SELECT
                     COUNT(*) AS total,
@@ -408,7 +524,6 @@ impl RowCounts {
         .bind(DecisionKind::EmptyTransition)
         .fetch_one(conn)
         .await
-        .unwrap()
     }
 }
 
@@ -481,9 +596,11 @@ pub async fn get_connection(
         .connect()
         .await?;
 
-    // PRAGMAs set here are from https://phiresky.github.io/blog/2020/sqlite-performance-tuning/
-    // This is to allow faster writes to the database.
-    run_command(&mut conn, "PRAGMA synchronous = normal").await?;
-    run_command(&mut conn, "PRAGMA journal_mode = WAL;").await?;
+    if mode != ConnectionMode::ReadOnly {
+        // PRAGMAs set here are from https://phiresky.github.io/blog/2020/sqlite-performance-tuning/
+        // This is to allow faster writes to the database.
+        run_command(&mut conn, "PRAGMA synchronous = normal").await?;
+        run_command(&mut conn, "PRAGMA journal_mode = WAL;").await?;
+    }
     Ok(conn)
 }
